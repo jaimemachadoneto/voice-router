@@ -26,6 +26,9 @@ OFFLINE = "offline"
 # The most options that the words may act on with no model. A wider set costs
 # too much certainty, so the router does not act.
 MAX_OFFLINE_OPTIONS = 3
+# The lowest route confidence that may act. The measured rule keeps a complex
+# request from a device action, so the router acts only at this floor or above.
+ROUTE_FLOOR = 0.9
 
 
 @dataclass
@@ -177,6 +180,10 @@ async def decide(
     route = answers["route"].choice
     if route != DEVICE_COMMAND:
         return _no_act(f, route, "jev", None, confidence, record)
+    if answers["route"].probabilities.get(DEVICE_COMMAND, 0.0) < ROUTE_FLOOR:
+        # A weak route answer does not act, even when it names a device. The
+        # measured route gate keeps a complex request from a device action.
+        return _no_act(f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record)
 
     options = f.options
     if options is None:

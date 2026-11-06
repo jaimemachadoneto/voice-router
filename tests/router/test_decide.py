@@ -79,6 +79,7 @@ class FakeJev(Jev):
         action: str = "turn_off",
         device: str | None = None,
         probabilities: dict[str, float] | None = None,
+        route_probabilities: dict[str, float] | None = None,
         delay: float = 0.0,
         error: Exception | None = None,
     ):
@@ -87,6 +88,7 @@ class FakeJev(Jev):
         self.action = action
         self.device = device
         self.probabilities = probabilities or {}
+        self.route_probabilities = route_probabilities or {route: 1.0}
         self.delay = delay
         self.error = error
         self.asked: list[str] = []
@@ -100,7 +102,9 @@ class FakeJev(Jev):
         if self.delay:
             await asyncio.sleep(self.delay)
         answers = {
-            "route": Answer(self.route, {self.route: 1.0}, 1.0, 0.01, 10, 0.0),
+            "route": Answer(
+                self.route, dict(self.route_probabilities), 1.0, 0.01, 10, 0.0
+            ),
             "action": Answer(self.action, {self.action: 1.0}, 1.0, 0.01, 10, 0.0),
         }
         if "device" in self.asked:
@@ -204,6 +208,43 @@ async def test_a_choice_outside_the_options_does_not_act(house: House):
     assert decision.act is False
     assert decision.reason == "low_confidence"
     assert decision.entity_ids == []
+
+
+async def test_a_route_below_the_floor_does_not_act(house: House):
+    jev = FakeJev(
+        route="device_command",
+        action="turn_off",
+        device="light.office_lamp",
+        route_probabilities={"device_command": 0.56, "complex": 0.44},
+        probabilities={
+            "light.office_lamp": 0.8,
+            "light.office_ceiling": 0.1,
+            "none": 0.05,
+        },
+    )
+    decision = await decide("turn off the office light", None, house, jev)
+    assert decision.act is False
+    assert decision.reason == "low_confidence"
+    assert decision.entity_ids == []
+    assert decision.confidence == {"route": 1.0, "device": 0.8}
+
+
+async def test_a_route_at_the_floor_acts(house: House):
+    jev = FakeJev(
+        route="device_command",
+        action="turn_off",
+        device="light.office_lamp",
+        route_probabilities={"device_command": 0.9, "complex": 0.1},
+        probabilities={
+            "light.office_lamp": 0.8,
+            "light.office_ceiling": 0.1,
+            "none": 0.05,
+        },
+    )
+    decision = await decide("turn off the office light", None, house, jev)
+    assert decision.act is True
+    assert decision.entity_ids == ["light.office_lamp"]
+    assert decision.reason is None
 
 
 async def test_a_set_has_its_value(house: House):
