@@ -4,10 +4,13 @@ The tests use an invented house, so they check the rules without a real
 registry or a real alias file.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from voice_router.aliases import load_word_data
 from voice_router.house import House
+from voice_router.words import entity_text
 
 PAYLOAD = {
     "entities": [
@@ -89,3 +92,21 @@ def test_a_risky_entity_is_in_the_index(house: House):
 def test_the_area_aliases_are_merged(house: House):
     assert "office" in house.area_aliases["Office"]
     assert "study" in house.area_aliases["Office"]
+
+
+def test_the_house_words_join_the_entity_aliases():
+    words = replace(load_word_data(None), entities={"light.office_lamp": ["desk lamp"]})
+    house = House.from_sync(PAYLOAD, words)
+    entity = house.entities["light.office_lamp"]
+    assert entity.aliases == ("reading lamp", "desk lamp")
+    text = entity_text(entity, house.area_aliases)
+    assert "reading lamp" in text
+    assert "desk lamp" in text
+
+
+def test_the_house_area_words_join_the_sync_areas():
+    words = replace(load_word_data(None), areas={"Office": ["workroom"]})
+    house = House.from_sync(PAYLOAD, words)
+    assert "office" in house.area_aliases["Office"]
+    assert "study" in house.area_aliases["Office"]
+    assert "workroom" in house.area_aliases["Office"]
