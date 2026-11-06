@@ -23,7 +23,6 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.voice_router import async_setup_entry, async_unload_entry
 from custom_components.voice_router.const import (
     CONF_RISKY,
     CONF_ROUTER_TOKEN,
@@ -259,14 +258,15 @@ async def test_setup_syncs_and_unload_stops_the_timer(
 ) -> None:
     """The setup sends the house and the unload stops the pending sync."""
     aioclient_mock.post("http://router/sync", json={})
-    await async_setup_entry(hass, entry)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
     state = hass.data[DOMAIN][entry.entry_id]
     assert aioclient_mock.call_count == 1
 
     er.async_get(hass).async_update_entity("light.kitchen", name="Kitchen lamp")
     assert state["timer"] is not None
 
-    await async_unload_entry(hass, entry)
+    assert await hass.config_entries.async_unload(entry.entry_id)
     assert entry.entry_id not in hass.data[DOMAIN]
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=3))

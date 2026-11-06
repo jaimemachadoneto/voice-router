@@ -1,6 +1,7 @@
 """The Voice Router integration."""
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.issue_registry import async_delete_issue
@@ -31,11 +32,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     await async_start_sync(hass, entry, client)
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.CONVERSATION])
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Remove the config entry of the component."""
+    unloaded = await hass.config_entries.async_unload_platforms(
+        entry, [Platform.CONVERSATION]
+    )
     state = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if state is not None:
         if state["timer"] is not None:
@@ -44,4 +49,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             unsub()
         for issue_id in state["issues"]:
             async_delete_issue(hass, DOMAIN, issue_id)
-    return True
+    return unloaded

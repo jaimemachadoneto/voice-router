@@ -1,0 +1,214 @@
+"""The conversation agent: route each request and act, confirm or give it to the built-in agent."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any
+
+from homeassistant.components.conversation import (
+    HOME_ASSISTANT_AGENT,
+    ChatLog,
+    ConversationEntity,
+    ConversationInput,
+    ConversationResult,
+    async_converse,
+    async_set_agent,
+    async_unset_agent,
+)
+from homeassistant.components.conversation.models import AbstractConversationAgent
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import intent
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util.dt import utcnow
+
+from .const import CONF_RISKY, DEFAULT_RISKY, DOMAIN
+from .execute import NotSupported, UnknownEntity, execute
+from .phrases import phrase, yes_no
+from .router_client import RouterClient, RouterUnavailable
+from .sync import exposed_risky, is_risky
+
+DEVICE_COMMAND = "device_command"
+OFFLINE = "offline"
+CONFIRM_SECONDS = 30
+LANGUAGES = ["pt", "en", "es"]
+
+
+@dataclass
+class Pending:
+    """A decision that waits for a yes or a no."""
+
+    decision: dict[str, Any]
+    record_id: str
+    expires: datetime
+
+
+def _room_name(hass: HomeAssistant, device_id: str | None) -> str | None:
+    """Give the name of the area of the device, or None without an area."""
+    if device_id is None:
+        return None
+    device = dr.async_get(hass).async_get(device_id)
+    if device is None or device.area_id is None:
+        return None
+    area = ar.async_get(hass).async_get_area(device.area_id)
+    return area.name if area is not None else None
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the conversation agent of the entry."""
+    client: RouterClient = hass.data[DOMAIN][entry.entry_id]["client"]
+    async_add_entities([VoiceRouterAgent(hass, entry, client)])
+
+
+class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
+    """Route each request and act, ask to confirm or call the built-in agent."""
+
+    _attr_name = "Voice Router"
+    _attr_unique_id = "voice_router"
+
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, client: RouterClient
+    ) -> None:
+        """Keep Home Assistant, the entry, the client and the pending actions."""
+        self.hass = hass
+        self._entry = entry
+        self._client = client
+        self.pending: dict[str, Pending] = {}
+
+    @property
+    def supported_languages(self) -> list[str]:
+        """Give the languages of the phrases and of the router."""
+        return list(LANGUAGES)
+
+    async def async_added_to_hass(self) -> None:
+        """Register the agent for the pipelines of the entry."""
+        await super().async_added_to_hass()
+        async_set_agent(self.hass, self._entry, self)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Remove the agent from the pipelines of the entry."""
+        async_unset_agent(self.hass, self._entry)
+        await super().async_will_remove_from_hass()
+
+    def _reply(
+        self,
+        language: str,
+        conversation_id: str,
+        speech: str,
+        continue_conversation: bool = False,
+    ) -> ConversationResult:
+        """Make the result with one spoken sentence."""
+        response = intent.IntentResponse(language=language)
+        response.async_set_speech(speech)
+        return ConversationResult(
+            response=response,
+            conversation_id=conversation_id,
+            continue_conversation=continue_conversation,
+        )
+
+    def _async_log(self, record_id: str, result: dict[str, Any]) -> None:
+        """Send the result of the record to the router and do not wait."""
+        if record_id:
+            self.hass.async_create_task(self._client.log(record_id, result))
+
+    async def _async_builtin(self, user_input: ConversationInput) -> ConversationResult:
+        """Give the request to the built-in conversation agent."""
+        return await async_converse(
+            self.hass,
+            user_input.text,
+            user_input.conversation_id,
+            user_input.context,
+            user_input.language,
+            agent_id=HOME_ASSISTANT_AGENT,
+            device_id=user_input.device_id,
+        )
+
+    async def _async_handle_message(
+        self, user_input: ConversationInput, chat_log: ChatLog
+    ) -> ConversationResult:
+        """Route one message and act, confirm or hand over."""
+        language = (user_input.language or "en")[:2]
+        conversation_id = user_input.conversation_id or ""
+        text = user_input.text
+
+        pending = self.pending.get(conversation_id)
+        if pending is not None and pending.expires > utcnow():
+            answer = yes_no(text)
+            if answer is True:
+                del self.pending[conversation_id]
+                speech = await execute(self.hass, pending.decision, language)
+                self._async_log(pending.record_id, {"status": "done"})
+                return self._reply(language, conversation_id, speech)
+            if answer is False:
+                del self.pending[conversation_id]
+                self._async_log(pending.record_id, {"status": "cancelled"})
+                return self._reply(
+                    language, conversation_id, phrase("cancelled", language)
+                )
+
+        # A new request drops an expired pending action, or a pending action
+        # that the answer does not match.
+        self.pending.pop(conversation_id, None)
+
+        room = _room_name(self.hass, user_input.device_id)
+        try:
+            decision = await self._client.route(
+                text, language, room, conversation_id, None
+            )
+        except RouterUnavailable:
+            return await self._async_builtin(user_input)
+
+        record_id = decision.get("record_id", "")
+        route = decision.get("route")
+
+        if route == DEVICE_COMMAND and decision.get("act"):
+            entity_ids = decision.get("entity_ids", [])
+            risky = self._entry.options.get(CONF_RISKY, DEFAULT_RISKY)
+            exposed = set(exposed_risky(self.hass, risky))
+            if any(entity_id in exposed for entity_id in entity_ids):
+                # The component does not act on a risky entity that someone
+                # exposed to Assist by hand.
+                self._async_log(record_id, {"status": "builtin"})
+                return await self._async_builtin(user_input)
+            if any(is_risky(self.hass, entity_id, risky) for entity_id in entity_ids):
+                self.pending[conversation_id] = Pending(
+                    decision=decision,
+                    record_id=record_id,
+                    expires=utcnow() + timedelta(seconds=CONFIRM_SECONDS),
+                )
+                self._async_log(record_id, {"pending": True})
+                return self._reply(
+                    language,
+                    conversation_id,
+                    phrase("confirm", language),
+                    continue_conversation=True,
+                )
+            try:
+                speech = await execute(self.hass, decision, language)
+            except UnknownEntity, NotSupported:
+                self._async_log(record_id, {"status": "builtin"})
+                return await self._async_builtin(user_input)
+            self._async_log(record_id, {"status": "done"})
+            return self._reply(language, conversation_id, speech)
+
+        if route == DEVICE_COMMAND:
+            # A device command without an act is a question or a refusal.
+            self._async_log(record_id, {"status": "builtin"})
+            return await self._async_builtin(user_input)
+
+        if route == OFFLINE:
+            self._async_log(record_id, {"status": "offline"})
+            return self._reply(
+                language, conversation_id, phrase("no_internet", language)
+            )
+
+        # TODO: Replace this handover with run_model for chat and complex in Task 16.
+        self._async_log(record_id, {"status": "builtin"})
+        return await self._async_builtin(user_input)
