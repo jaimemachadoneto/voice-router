@@ -2,7 +2,7 @@
 name = "voice-router"
 version = "0.1.0"
 description = "The Home Assistant voice router: turns a spoken command into the entities that it acts on."
-requires-python = ">=3.11"
+requires-python = ">=3.14.2"
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
@@ -13,7 +13,7 @@ dependencies = [
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
-  "pytest-homeassistant-custom-component==0.13.366; python_full_version >= '3.14.2'",
+  "pytest-homeassistant-custom-component==0.13.366",
   "openai>=1.50",
   # Home Assistant installs these at runtime from the manifest of the
   # `conversation` dependency. The test environment installs them here.

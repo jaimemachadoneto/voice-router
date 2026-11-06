@@ -18,11 +18,10 @@ DEFAULT_LLM_HASS_API = ["assist"]
 DEFAULT_ROUTER_TIMEOUT = 1.0
 
 # A domain acts on each entity of that domain. An entry with a colon acts only
-# on the entities of that device class. An entity ID acts only on that entity.
+# on the entities of that device class. Site entities are added in the options
+# flow.
 DEFAULT_RISKY = [
     "lock",
     "alarm_control_panel",
     "cover:garage",
-    "switch.agua_quente_hospede",
-    "switch.carregador_carro",
 ]

@@ -76,7 +76,7 @@ class VoiceRouterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             async with session.get(f"{url}/health", timeout=HEALTH_TIMEOUT) as response:
                 return response.status == 200
-        except (aiohttp.ClientError, TimeoutError):
+        except aiohttp.ClientError, TimeoutError:
             return False
 
     @staticmethod

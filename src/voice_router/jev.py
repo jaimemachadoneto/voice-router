@@ -116,7 +116,7 @@ class Jev:
                     input_tokens=tokens,
                     cost=cost,
                 )
-        except (KeyError, TypeError, AttributeError):
+        except KeyError, TypeError, AttributeError:
             # A reply that is not usable is a failure of the call, so the
             # caller can treat it like a failed request.
             raise JevError(f"unusable reply: {text[:BODY_LIMIT]}") from None
