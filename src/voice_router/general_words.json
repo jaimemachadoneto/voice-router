@@ -1,0 +1,70 @@
+{
+  "domains": {
+    "light": ["luz", "luzes", "light", "lights", "luces"],
+    "climate": [
+      "ar condicionado",
+      "ar",
+      "air conditioner",
+      "air",
+      "aire acondicionado",
+      "aire"
+    ],
+    "cover": ["persiana", "persianas", "blinds"],
+    "fan": ["ventilador", "fan"]
+  },
+  "actions": {
+    "on": {
+      "en": ["turn on", "switch on", "power on"],
+      "es": ["enciende", "encender", "prende", "prender", "liga", "ligar"],
+      "pt": ["liga", "ligar", "acende", "acender"]
+    },
+    "off": {
+      "en": ["turn off", "switch off", "power off", "shut off"],
+      "es": ["apaga", "apagar", "desconecta", "desconectar"],
+      "pt": ["desliga", "desligar", "apaga", "apagar"]
+    },
+    "set": {
+      "en": ["set", "dim", "raise", "lower", "open", "close"],
+      "es": [
+        "pon",
+        "poner",
+        "ajusta",
+        "ajustar",
+        "sube",
+        "subir",
+        "baja",
+        "bajar",
+        "abre",
+        "abrir",
+        "cierra",
+        "cerrar"
+      ],
+      "pt": [
+        "põe",
+        "pôr",
+        "coloca",
+        "colocar",
+        "ajusta",
+        "ajustar",
+        "sobe",
+        "subir",
+        "desce",
+        "descer",
+        "abre",
+        "abrir",
+        "fecha",
+        "fechar"
+      ]
+    },
+    "status": {
+      "en": ["is", "are", "what is the temperature"],
+      "es": ["está", "están", "qué temperatura"],
+      "pt": ["está", "estão", "que temperatura"]
+    }
+  },
+  "questions": {
+    "pt": ["como", "o que", "qual", "quando", "se", "por que", "explica", "lembra"],
+    "en": ["how", "what", "which", "when", "if", "why", "explain", "remind"],
+    "es": ["cómo", "qué", "cuál", "cuándo", "si", "por qué", "explica", "recuerda"]
+  }
+}
