@@ -414,6 +414,42 @@ async def test_offline_says_there_is_no_internet(
     assert _speech(result) == "Não há conexão com a internet"
 
 
+async def test_two_entries_make_two_agents(hass: HomeAssistant, aioclient_mock) -> None:
+    """Two entries with different routers make two conversation agents."""
+    aioclient_mock.post(f"{ROUTER}/sync", json={})
+    aioclient_mock.post("http://router-two/sync", json={})
+    data = {
+        CONF_ROUTER_TOKEN: "t",
+        CONF_LITELLM_URL: "http://llm",
+        CONF_LITELLM_KEY: "k",
+    }
+    first = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="entry-one",
+        data={**data, CONF_ROUTER_URL: ROUTER},
+        options={CONF_RISKY: ["switch.car_charger"]},
+    )
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="entry-two",
+        data={**data, CONF_ROUTER_URL: "http://router-two"},
+        options={CONF_RISKY: ["switch.car_charger"]},
+    )
+    first.add_to_hass(hass)
+    second.add_to_hass(hass)
+    # The first setup loads the component, and the component loads both entries.
+    assert await hass.config_entries.async_setup(first.entry_id)
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    agents = [
+        entry
+        for entry in registry.entities.values()
+        if entry.domain == conversation.DOMAIN and entry.platform == DOMAIN
+    ]
+    assert len(agents) == 2
+
+
 async def test_each_request_sends_a_log(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:

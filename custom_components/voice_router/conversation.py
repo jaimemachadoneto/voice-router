@@ -71,7 +71,6 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
     """Route each request and act, ask to confirm or call the built-in agent."""
 
     _attr_name = "Voice Router"
-    _attr_unique_id = "voice_router"
 
     def __init__(
         self, hass: HomeAssistant, entry: ConfigEntry, client: RouterClient
@@ -80,6 +79,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         self.hass = hass
         self._entry = entry
         self._client = client
+        self._attr_unique_id = f"voice_router_{entry.entry_id}"
         self.pending: dict[str, Pending] = {}
 
     @property
