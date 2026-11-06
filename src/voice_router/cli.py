@@ -23,7 +23,7 @@ from voice_router.settings import (
 )
 
 
-async def _replay(data: Path, key: str, model: str, limit: float) -> int:
+async def _replay(data: Path, key: str, model: str, limit: float, explain: bool) -> int:
     """Run the replay with one HTTP client, then print the report.
 
     The client closes with the `async with`, so the command leaves no open
@@ -33,7 +33,7 @@ async def _replay(data: Path, key: str, model: str, limit: float) -> int:
     async with httpx.AsyncClient() as client:
         jev = Jev(key, model=model, client=client)
         rows = await replay(data, jev, limit)
-    print(report(rows))
+    print(report(rows, explain=explain))
     return 0
 
 
@@ -59,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
     replay_parser.add_argument(
         "--model", default=DEFAULT_JEV_MODEL, help="the Jev model alias."
     )
+    replay_parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="print one line for each row that fails.",
+    )
     args = parser.parse_args(argv)
     try:
         key = _openrouter_key()
@@ -66,4 +71,4 @@ def main(argv: list[str] | None = None) -> int:
         # The message of the settings names the variables and never the key.
         print(f"voice-router: {err}", file=sys.stderr)
         return 2
-    return asyncio.run(_replay(args.data, key, args.model, args.limit))
+    return asyncio.run(_replay(args.data, key, args.model, args.limit, args.explain))

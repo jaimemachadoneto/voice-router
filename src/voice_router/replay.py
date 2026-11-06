@@ -160,6 +160,59 @@ def score(rows: list[dict]) -> dict:
     return counts
 
 
+def _failed(row: dict) -> bool:
+    """True when the row is a failure of the decision."""
+    decision = row["decision"]
+    if row["kind"] == "route":
+        if decision.route != row["expected"]:
+            return True
+        return row["expected"] != "device_command" and bool(decision.act)
+    if row["kind"] == "action":
+        return _action(decision) != row["expected"]
+    if row["kind"] == "device":
+        return _device_outcome(decision, row["expected"]) in ("wrong", "missing")
+    return False
+
+
+def _jev_fields(decision) -> dict:
+    """The choice and the probabilities of each question in the log."""
+    jev = decision.jev or {}
+    out = {}
+    for name in ("route", "action", "device"):
+        answer = jev.get(name)
+        if isinstance(answer, dict) and "choice" in answer:
+            out[name] = {
+                "choice": answer.get("choice"),
+                "probabilities": answer.get("probabilities"),
+            }
+    return out
+
+
+def failures(rows: list[dict]) -> str:
+    """One JSON line for each row that fails, with the fields that explain it."""
+    lines = []
+    for row in rows:
+        if not _failed(row):
+            continue
+        decision = row["decision"]
+        entry = {
+            "id": row.get("id"),
+            "language": row["language"],
+            "text": row.get("text"),
+            "expected": row["expected"],
+            "route": decision.route,
+            "act": decision.act,
+            "action": decision.action,
+            "entity_ids": list(decision.entity_ids or ()),
+            "reason": decision.reason,
+            "options": decision.options,
+            "filter_source": decision.filter_source,
+            "jev": _jev_fields(decision),
+        }
+        lines.append(json.dumps(entry, ensure_ascii=False, sort_keys=True))
+    return "\n".join(lines)
+
+
 async def replay(data: Path, jev: Jev, limit: float) -> list[dict]:
     """The decision on every labeled text of the data folder.
 
@@ -175,6 +228,8 @@ async def replay(data: Path, jev: Jev, limit: float) -> list[dict]:
             rows.append(
                 {
                     "kind": "route",
+                    "id": item["id"],
+                    "text": item["text"],
                     "expected": item["route"],
                     "language": item["language"],
                     "decision": decision,
@@ -186,6 +241,8 @@ async def replay(data: Path, jev: Jev, limit: float) -> list[dict]:
             rows.append(
                 {
                     "kind": "action",
+                    "id": item["id"],
+                    "text": item["text"],
                     "expected": item["action"],
                     "language": item["language"],
                     "decision": decision,
@@ -196,6 +253,8 @@ async def replay(data: Path, jev: Jev, limit: float) -> list[dict]:
         rows.append(
             {
                 "kind": "device",
+                "id": item["id"],
+                "text": item["text"],
                 "expected": {
                     "expected": item.get("expected", []),
                     "allowed": item.get("allowed", []),
@@ -251,10 +310,17 @@ def _section(title: str, rows: list[dict]) -> list[str]:
     return lines
 
 
-def report(rows: list[dict]) -> str:
-    """The counters of each language and of all rows, one section for each."""
+def report(rows: list[dict], explain: bool = False) -> str:
+    """The counters of each language and of all rows, one section for each.
+
+    With `explain` the report adds the rows that fail, one line for each.
+    """
     lines = []
     for lang in LANGUAGES:
         lines.extend(_section(lang, [row for row in rows if row["language"] == lang]))
     lines.extend(_section("all", rows))
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if explain:
+        found = failures(rows)
+        text += "\n\nfailed rows:\n" + (found if found else "none")
+    return text
