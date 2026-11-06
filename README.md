@@ -1,7 +1,7 @@
 # voice-router
 
-The voice router turns a spoken command into the devices or the area that it
-names. The router never runs an action. Home Assistant runs each action.
+The voice router turns a spoken command into the devices that it names and the
+action. The router never runs an action. Home Assistant runs each action.
 
 The project has two parts:
 
@@ -62,8 +62,12 @@ check
 Start the service:
 
 ```sh
-uvicorn voice_router.api:app_from_env --factory --host 0.0.0.0 --port 8000
+VOICE_ROUTER_TOKEN=dev OPENROUTER_API_KEY=dev VOICE_ROUTER_DB=./voice-router.db \
+  uvicorn voice_router.api:app_from_env --factory --host 127.0.0.1 --port 8000
 ```
+
+The command sets the token, the OpenRouter key and a database file in the
+current directory, so it works on a developer machine.
 
 `GET /health` needs no token. It answers `{"status": "ok", "synced": false}`
 when no sync exists.
@@ -80,9 +84,10 @@ Mount a volume at `/data` to keep the sync and the log after a restart.
 
 ## Privacy
 
-At runtime, the router sends the text of each spoken command, the room and the
-names of the offered devices to OpenRouter System One. OpenRouter is a third
-party. The router sends nothing else.
+At runtime, the router sends the text of each spoken command, the room, and the
+name, the area (with its aliases) and the aliases of each offered device to
+OpenRouter System One. OpenRouter is a third party. The router sends nothing
+else.
 
 The token and the OpenRouter key are secrets. Never put a secret in git, in a
 log line or in an error message.
@@ -91,9 +96,10 @@ log line or in an error message.
 
 The first release is not ready. These steps are not done yet:
 
-- The pull request in `home-ops` for the Kubernetes deployment.
+- The pull request in `home-ops` that creates the HelmRelease of the app.
 - The `MY_PAT` secret in GitHub.
 - The first version tag and the image in `ghcr.io`.
 
-Add the secret, then run `deploy patch`. The workflow publishes the image and
-opens the pull request in `home-ops`.
+A new app needs the `home-ops` pull request first. That pull request creates
+the HelmRelease of the app. Then add the secret and run `deploy patch`. The
+workflow publishes the image and opens the image pull request in `home-ops`.
