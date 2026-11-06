@@ -314,7 +314,7 @@ async def test_chat_sends_no_tools(
     with _patch_client(client):
         await _ask(hass, "Que horas são?")
 
-    assert client.calls[0]["tools"] is None
+    assert "tools" not in client.calls[0]
     assert client.calls[0]["model"] == CHAT_MODEL
     assert client.init_kwargs == {"base_url": "http://llm", "api_key": "k"}
     assert client.closed is True

@@ -200,13 +200,15 @@ async def run_model(
     try:
         for _ in range(MAX_TOOL_ITERATIONS):
             try:
-                stream = await client.chat.completions.create(
-                    model=model,
-                    messages=list(messages),
-                    tools=cast(Any, tools),
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
+                kwargs: dict[str, Any] = {
+                    "model": model,
+                    "messages": list(messages),
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                }
+                if tools is not None:
+                    kwargs["tools"] = tools
+                stream = await client.chat.completions.create(**kwargs)
                 async for content in chat_log.async_add_delta_content_stream(
                     user_input.agent_id, _transform_stream(stream, usage_holder)
                 ):
