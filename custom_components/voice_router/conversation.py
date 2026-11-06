@@ -118,6 +118,11 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         if record_id:
             self.hass.async_create_task(self._client.log(record_id, result))
 
+    def _any_exposed(self, entity_ids: list[str], risky: list[str]) -> bool:
+        """Tell if a risky entity of the decision is exposed to conversation."""
+        exposed = set(exposed_risky(self.hass, risky))
+        return any(entity_id in exposed for entity_id in entity_ids)
+
     async def _async_builtin(self, user_input: ConversationInput) -> ConversationResult:
         """Give the request to the built-in conversation agent."""
         return await async_converse(
@@ -143,7 +148,18 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
             answer = yes_no(text)
             if answer is True:
                 del self.pending[conversation_id]
-                speech = await execute(self.hass, pending.decision, language)
+                risky = self._entry.options.get(CONF_RISKY, DEFAULT_RISKY)
+                entity_ids = pending.decision.get("entity_ids", [])
+                # The exposure can change in the 30 s window, so check it again
+                # before the action.
+                if self._any_exposed(entity_ids, risky):
+                    self._async_log(pending.record_id, {"status": "builtin"})
+                    return await self._async_builtin(user_input)
+                try:
+                    speech = await execute(self.hass, pending.decision, language)
+                except UnknownEntity, NotSupported:
+                    self._async_log(pending.record_id, {"status": "builtin"})
+                    return await self._async_builtin(user_input)
                 self._async_log(pending.record_id, {"status": "done"})
                 return self._reply(language, conversation_id, speech)
             if answer is False:
@@ -171,8 +187,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         if route == DEVICE_COMMAND and decision.get("act"):
             entity_ids = decision.get("entity_ids", [])
             risky = self._entry.options.get(CONF_RISKY, DEFAULT_RISKY)
-            exposed = set(exposed_risky(self.hass, risky))
-            if any(entity_id in exposed for entity_id in entity_ids):
+            if self._any_exposed(entity_ids, risky):
                 # The component does not act on a risky entity that someone
                 # exposed to Assist by hand.
                 self._async_log(record_id, {"status": "builtin"})

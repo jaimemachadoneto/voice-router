@@ -281,6 +281,48 @@ async def test_a_risky_device_does_nothing_on_no(
     assert len(_calls_to(aioclient_mock, ROUTE_URL)) == 1
 
 
+async def test_a_pending_action_with_a_vanished_entity_hands_over(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    aioclient_mock,
+    car_charger: str,
+) -> None:
+    """A confirmed action on an entity without a state calls the built-in agent."""
+    calls = async_mock_service(hass, "switch", "turn_off")
+    await _setup(hass, entry, aioclient_mock, _decision(entity_ids=[car_charger]))
+    await _ask(hass, "Desliga o carregador")
+    hass.states.async_remove(car_charger)
+    builtin = _result("from the built-in agent")
+
+    with patch(BUILTIN_MODULE, AsyncMock(return_value=builtin)) as mock:
+        result = await _ask(hass, "sim")
+
+    assert result is builtin
+    mock.assert_awaited_once()
+    assert calls == []
+
+
+async def test_a_pending_action_never_acts_when_the_entity_is_exposed_in_the_window(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    aioclient_mock,
+    car_charger: str,
+) -> None:
+    """An entity exposed during the wait does not act on the confirmed action."""
+    calls = async_mock_service(hass, "switch", "turn_off")
+    await _setup(hass, entry, aioclient_mock, _decision(entity_ids=[car_charger]))
+    await _ask(hass, "Desliga o carregador")
+    async_expose_entity(hass, "conversation", car_charger, True)
+    builtin = _result("from the built-in agent")
+
+    with patch(BUILTIN_MODULE, AsyncMock(return_value=builtin)) as mock:
+        result = await _ask(hass, "sim")
+
+    assert result is builtin
+    mock.assert_awaited_once()
+    assert calls == []
+
+
 async def test_a_confirmation_expires_after_30_seconds(
     hass: HomeAssistant,
     entry: MockConfigEntry,
