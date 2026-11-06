@@ -33,5 +33,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "exposed_risky": {
+      "title": "A risky entity is exposed to Assist",
+      "description": "The entity {entity_id} is exposed to Assist. The router does not act on a risky entity. Remove it from the Assist exposure list or from the risky list."
+    }
   }
 }
