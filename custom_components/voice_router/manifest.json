@@ -1,0 +1,13 @@
+{
+  "domain": "voice_router",
+  "name": "Voice Router",
+  "version": "0.1.0",
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "dependencies": ["conversation"],
+  "requirements": ["openai>=1.50"],
+  "homeassistant": "2026.9.0",
+  "documentation": "https://github.com/jaimemachadoneto/voice-router",
+  "issue_tracker": "https://github.com/jaimemachadoneto/voice-router/issues",
+  "codeowners": ["@jaimemachadoneto"]
+}

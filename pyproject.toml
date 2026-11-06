@@ -10,7 +10,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "pytest-homeassistant-custom-component==0.13.366; python_full_version >= '3.14.2'",
+  "openai>=1.50",
+  # Home Assistant installs these at runtime from the manifest of the
+  # `conversation` dependency. The test environment installs them here.
+  "gazetteer-matcher==1.1.0",
+  "hassil==3.12.1",
+  "home-assistant-intents==2026.8.28",
+]
 
 [project.scripts]
 voice-router = "voice_router.cli:main"
@@ -27,5 +37,5 @@ voice_router = ["general_words.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 asyncio_mode = "auto"

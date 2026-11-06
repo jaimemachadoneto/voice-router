@@ -1,0 +1,37 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Voice Router",
+        "description": "Connect the router and the language model gateway.",
+        "data": {
+          "router_url": "Router URL",
+          "router_token": "Router token",
+          "litellm_url": "LiteLLM URL",
+          "litellm_key": "LiteLLM key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the router"
+    },
+    "abort": {
+      "already_configured": "The router is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Voice Router settings",
+        "description": "Set the models, the Home Assistant APIs, the risky entities and the router timeout.",
+        "data": {
+          "chat_model": "Chat model",
+          "complex_model": "Complex model",
+          "llm_hass_api": "Home Assistant APIs, separated by commas",
+          "risky": "Risky entities, separated by commas",
+          "router_timeout": "Router timeout in seconds"
+        }
+      }
+    }
+  }
+}
