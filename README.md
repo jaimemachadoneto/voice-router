@@ -115,9 +115,9 @@ name, the area (with its aliases) and the aliases of each offered device to
 OpenRouter System One. OpenRouter is a third party. The router sends nothing
 else.
 
-For a `chat` or a `complex` command, the component sends the conversation text
-and the offered device texts to the LiteLLM endpoint. A `complex` command uses
-the Home Assistant Assist API tools.
+For a `chat` command, the component sends the conversation text to the LiteLLM
+endpoint. For a `complex` command, it also sends the offered device texts and
+uses the Home Assistant Assist API tools.
 
 The token, the OpenRouter key and the LiteLLM key are secrets. Never put a
 secret in git, in a log line or in an error message.
