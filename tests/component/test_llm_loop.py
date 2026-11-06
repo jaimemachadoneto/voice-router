@@ -43,6 +43,7 @@ from custom_components.voice_router.const import (
     CONF_ROUTER_URL,
     DOMAIN,
 )
+from custom_components.voice_router.conversation import VoiceRouterAgent
 from custom_components.voice_router.llm_loop import (
     MAX_TOOL_ITERATIONS,
     ModelUnavailable,
@@ -178,7 +179,9 @@ def _tool_chunk(
     )
 
 
-def _usage_chunk() -> ChatCompletionChunk:
+def _usage_chunk(
+    prompt_tokens: int = 11, completion_tokens: int = 7
+) -> ChatCompletionChunk:
     """Make the last chunk with the token counts."""
     return ChatCompletionChunk(
         id="chunk-1",
@@ -186,7 +189,11 @@ def _usage_chunk() -> ChatCompletionChunk:
         created=0,
         model="voice-chat-test",
         object="chat.completion.chunk",
-        usage=CompletionUsage(prompt_tokens=11, completion_tokens=7, total_tokens=18),
+        usage=CompletionUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
     )
 
 
@@ -206,6 +213,7 @@ def _tool_answer(
         _tool_chunk(call_id, name, arguments[:middle]),
         _tool_chunk(None, None, arguments[middle:]),
         _finish_chunk("tool_calls"),
+        _usage_chunk(prompt_tokens=5, completion_tokens=2),
     ]
 
 
@@ -351,13 +359,30 @@ async def test_a_tool_call_runs_and_the_loop_continues(
     client.answers = [_tool_answer(), _text_answer("The light is on")]
     await _setup(hass, entry, aioclient_mock, "complex")
 
-    with _patch_client(client):
+    with (
+        _patch_client(client),
+        patch.object(VoiceRouterAgent, "_async_log") as log,
+    ):
         result = await _ask(hass, "Acende a luz da cozinha")
 
     assert _speech(result) == "The light is on"
     assert len(client.calls) == 2
     assert calls[0].data["entity_id"] == [kitchen_light]
     assert client.calls[1]["messages"][-1]["role"] == "tool"
+    logged = log.call_args.args[1]
+    assert set(logged) == {
+        "model",
+        "tools",
+        "input_tokens",
+        "output_tokens",
+        "seconds_to_first_text",
+        "seconds",
+    }
+    assert logged["model"] == COMPLEX_MODEL
+    assert logged["tools"] == ["intent__HassTurnOn"]
+    assert logged["input_tokens"] == 16
+    assert logged["output_tokens"] == 9
+    assert 0 < logged["seconds_to_first_text"] <= logged["seconds"]
 
 
 async def test_the_loop_stops_after_10_rounds(
@@ -423,4 +448,4 @@ async def test_the_chat_prompt_has_the_date_and_the_language(
     today = dt_util.now().date().isoformat()
     assert system["role"] == "system"
     assert today in system["content"]
-    assert "pt" in system["content"]
+    assert 'in the language "pt"' in system["content"]

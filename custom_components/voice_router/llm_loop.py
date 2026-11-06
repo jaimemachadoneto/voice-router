@@ -112,7 +112,8 @@ async def _transform_stream(
     """Transform the stream of OpenAI chunks into the deltas of the chat log.
 
     The stream sends a tool call in fragments, with one index for each call.
-    The variable `usage_holder` keeps the token counts of the last chunk.
+    The variable `usage_holder` keeps the time of the first text and the sums
+    of the token counts.
     """
     new_message = True
     tool_calls: dict[int, dict[str, str]] = {}
@@ -120,7 +121,12 @@ async def _transform_stream(
     async for chunk in stream:
         usage = getattr(chunk, "usage", None)
         if usage is not None and usage_holder is not None:
-            usage_holder["usage"] = usage
+            usage_holder["input_tokens"] = usage_holder.get(
+                "input_tokens", 0
+            ) + getattr(usage, "prompt_tokens", 0)
+            usage_holder["output_tokens"] = usage_holder.get(
+                "output_tokens", 0
+            ) + getattr(usage, "completion_tokens", 0)
         if not chunk.choices:
             continue
         choice = chunk.choices[0]
@@ -129,6 +135,8 @@ async def _transform_stream(
             new_message = False
             yield {"role": "assistant"}
         if delta.content:
+            if usage_holder is not None and "first_text" not in usage_holder:
+                usage_holder["first_text"] = time.monotonic()
             yield {"content": delta.content}
         for fragment in delta.tool_calls or ():
             call = tool_calls.setdefault(
@@ -171,7 +179,7 @@ async def run_model(
     prompt = None
     if is_chat:
         prompt = CHAT_PROMPT.format(
-            language=user_input.language,
+            language=(user_input.language or "en")[:2],
             now=dt_util.now().isoformat(),
         )
 
@@ -195,7 +203,6 @@ async def run_model(
         api_key=entry.data[CONF_LITELLM_KEY],
     )
     start = time.monotonic()
-    first_text: float | None = None
     usage_holder: dict[str, Any] = {}
     try:
         for _ in range(MAX_TOOL_ITERATIONS):
@@ -206,19 +213,13 @@ async def run_model(
                     "stream": True,
                     "stream_options": {"include_usage": True},
                 }
-                if tools is not None:
+                if tools:
                     kwargs["tools"] = tools
                 stream = await client.chat.completions.create(**kwargs)
                 async for content in chat_log.async_add_delta_content_stream(
                     user_input.agent_id, _transform_stream(stream, usage_holder)
                 ):
                     messages.extend([_to_openai(content)])
-                    if (
-                        first_text is None
-                        and isinstance(content, conversation.AssistantContent)
-                        and content.content
-                    ):
-                        first_text = time.monotonic()
             except openai.APIConnectionError, openai.APITimeoutError:
                 raise ModelUnavailable("The model is not reachable") from None
             except openai.APIStatusError as err:
@@ -245,9 +246,9 @@ async def run_model(
         if isinstance(content, conversation.AssistantContent)
         for tool_call in content.tool_calls or []
     ]
-    usage = usage_holder.get("usage")
-    input_tokens = getattr(usage, "prompt_tokens", 0) if usage is not None else 0
-    output_tokens = getattr(usage, "completion_tokens", 0) if usage is not None else 0
+    input_tokens = usage_holder.get("input_tokens", 0)
+    output_tokens = usage_holder.get("output_tokens", 0)
+    first_text = usage_holder.get("first_text")
     result = {
         "model": model,
         "tools": tool_names,

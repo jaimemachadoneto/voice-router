@@ -225,6 +225,10 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
                 language, conversation_id, phrase("no_internet", language)
             )
 
+        if route not in ("chat", "complex"):
+            self._async_log(record_id, {"status": "builtin"})
+            return await self._async_builtin(user_input)
+
         try:
             reply, result = await run_model(
                 self.hass, self._entry, user_input, chat_log, route
