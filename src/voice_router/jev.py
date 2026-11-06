@@ -100,21 +100,24 @@ class Jev:
             data = response.json()
         except ValueError:
             raise JevError(f"invalid reply: {text[:BODY_LIMIT]}") from None
-        usage = data.get("usage", {})
-        tokens = usage.get("input_tokens", 0)
-        cost = usage.get("cost", 0.0)
-        answers = data.get("answers", {})
         out = {}
-        for q in questions:
-            answer = answers.get(q.name)
-            if answer is None:
-                raise JevError(f"no answer for question {q.name}: {text[:BODY_LIMIT]}")
-            out[q.name] = Answer(
-                choice=answer["choice"],
-                probabilities=answer["probabilities"],
-                confidence=answer.get("confidence", 0.0),
-                seconds=seconds,
-                input_tokens=tokens,
-                cost=cost,
-            )
+        try:
+            usage = data.get("usage", {})
+            tokens = usage.get("input_tokens", 0)
+            cost = usage.get("cost", 0.0)
+            answers = data["answers"]
+            for q in questions:
+                answer = answers[q.name]
+                out[q.name] = Answer(
+                    choice=answer["choice"],
+                    probabilities=answer["probabilities"],
+                    confidence=answer.get("confidence", 0.0),
+                    seconds=seconds,
+                    input_tokens=tokens,
+                    cost=cost,
+                )
+        except (KeyError, TypeError, AttributeError):
+            # A reply that is not usable is a failure of the call, so the
+            # caller can treat it like a failed request.
+            raise JevError(f"unusable reply: {text[:BODY_LIMIT]}") from None
         return out

@@ -81,6 +81,7 @@ async def test_a_server_error_raises_without_the_key():
 
     message = str(caught.value)
     assert "500" in message
+    assert "upstream failed" in message
     assert "secret-key" not in message
     assert "x" * 300 not in message
 
@@ -101,3 +102,19 @@ async def test_a_missing_answer_raises():
         jev = Jev("secret-key", client=client)
         with pytest.raises(JevError):
             await jev.choices("hello", [_question("route"), _question("action")])
+
+
+async def test_an_answer_without_probabilities_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "answers": {"route": {"choice": "chat"}},
+                "usage": {"input_tokens": 1, "cost": 0.0},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        jev = Jev("secret-key", client=client)
+        with pytest.raises(JevError):
+            await jev.choices("hello", [_question("route")])
