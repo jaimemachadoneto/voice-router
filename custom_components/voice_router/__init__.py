@@ -16,6 +16,11 @@ from .router_client import RouterClient
 from .sync import async_start_sync
 
 
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry after an options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the component from a config entry."""
     client = RouterClient(
@@ -24,6 +29,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data[CONF_ROUTER_TOKEN],
         entry.options.get(CONF_ROUTER_TIMEOUT, DEFAULT_ROUTER_TIMEOUT),
     )
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     await async_start_sync(hass, entry, client)
     return True
 

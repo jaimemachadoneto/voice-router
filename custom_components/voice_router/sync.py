@@ -45,11 +45,12 @@ class SyncClient(Protocol):
 
 
 def _device_class(hass: HomeAssistant, entity_id: str) -> str | None:
-    """Give the device class of the registry or of the state."""
+    """Give the registry device class, the original class or the state class."""
     entry = er.async_get(hass).async_get(entity_id)
-    device_class = entry.device_class if entry is not None else None
-    if device_class is not None:
-        return device_class
+    if entry is not None:
+        device_class = entry.device_class or entry.original_device_class
+        if device_class is not None:
+            return device_class
     state = hass.states.get(entity_id)
     if state is None:
         return None
@@ -116,7 +117,8 @@ def build_payload(hass: HomeAssistant, risky: list[str]) -> dict[str, Any]:
         )
 
     areas = {
-        area.name: list(area.aliases) for area in ar.async_get(hass).async_list_areas()
+        area.name: sorted(area.aliases)
+        for area in ar.async_get(hass).async_list_areas()
     }
     body = {
         "entities": sorted(entities, key=lambda entity: entity["entity_id"]),

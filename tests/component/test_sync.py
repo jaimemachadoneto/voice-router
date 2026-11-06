@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import timedelta
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.components.homeassistant.exposed_entities import (
     async_expose_entity,
 )
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
@@ -21,6 +25,7 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.voice_router import async_setup_entry, async_unload_entry
 from custom_components.voice_router.const import (
+    CONF_RISKY,
     CONF_ROUTER_TOKEN,
     CONF_ROUTER_URL,
     DOMAIN,
@@ -74,7 +79,7 @@ def _make_entity(
 async def house(hass: HomeAssistant) -> dict[str, str]:
     """Make a small invented house with an exposure setting for each entity."""
     areas = ar.async_get(hass)
-    kitchen = areas.async_create("Kitchen", aliases={"cookhouse"})
+    kitchen = areas.async_create("Kitchen", aliases={"kitchen", "cookhouse"})
     office = areas.async_create("Office")
 
     entity_ids = {
@@ -138,7 +143,10 @@ async def test_the_payload_has_the_exposed_entities_and_the_risky_ones(
     assert entities["light.kitchen"]["risky"] is False
     assert entities["light.kitchen"]["name"] == "Kitchen light"
     assert entities["light.kitchen"]["area"] == "Kitchen"
-    assert payload["areas"] == {"Kitchen": ["cookhouse"], "Office": []}
+    assert payload["areas"] == {
+        "Kitchen": ["cookhouse", "kitchen"],
+        "Office": [],
+    }
     assert payload["registry_hash"].startswith("sha256:")
 
 
@@ -147,6 +155,39 @@ async def test_a_garage_cover_is_risky(
 ) -> None:
     """A cover with the garage device class is risky."""
     assert is_risky(hass, "cover.garage", ["cover:garage"]) is True
+
+
+async def test_a_garage_cover_without_a_state_is_risky(
+    hass: HomeAssistant, house: dict[str, str]
+) -> None:
+    """The original device class is enough without a state."""
+    hass.states.async_remove("cover.garage")
+
+    assert is_risky(hass, "cover.garage", ["cover:garage"]) is True
+
+
+async def test_a_listed_entity_id_is_risky(
+    hass: HomeAssistant, house: dict[str, str]
+) -> None:
+    """A listed entity ID is risky, and a different ID is not."""
+    assert is_risky(hass, "lock.front", ["lock.front"]) is True
+    assert is_risky(hass, "light.kitchen_ceiling", ["lock.front"]) is False
+
+
+async def test_the_hash_is_stable_for_area_aliases(
+    hass: HomeAssistant, house: dict[str, str]
+) -> None:
+    """The hash uses the area aliases in sorted order."""
+    payload = build_payload(hass, RISKY)
+    assert payload["areas"]["Kitchen"] == ["cookhouse", "kitchen"]
+
+    body = {
+        "entities": payload["entities"],
+        "areas": {"Kitchen": sorted(["cookhouse", "kitchen"]), "Office": []},
+    }
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+
+    assert payload["registry_hash"] == f"sha256:{digest}"
 
 
 async def test_the_hash_changes_when_an_alias_changes(
@@ -231,3 +272,22 @@ async def test_setup_syncs_and_unload_stops_the_timer(
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=3))
     await hass.async_block_till_done()
     assert aioclient_mock.call_count == 1
+
+
+async def test_an_options_change_reloads_the_entry(
+    hass: HomeAssistant,
+    house: dict[str, str],
+    entry: MockConfigEntry,
+    aioclient_mock,
+) -> None:
+    """An options change reloads the entry, so the new values take effect."""
+    aioclient_mock.post("http://router/sync", json={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.LOADED
+
+    with patch.object(hass.config_entries, "async_reload", AsyncMock()) as reload:
+        hass.config_entries.async_update_entry(entry, options={CONF_RISKY: ["lock"]})
+        await hass.async_block_till_done()
+
+    reload.assert_awaited_once_with(entry.entry_id)
