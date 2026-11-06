@@ -1,0 +1,11 @@
+devenv.lock
+devenv.nix
+devenv.local.nix
+devenv.base.nix
+.devenv/
+.direnv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+.ruff_cache/
