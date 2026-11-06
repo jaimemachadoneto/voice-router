@@ -96,7 +96,10 @@ class RouterClient:
                 raise RouterUnavailable(
                     f"The router refused the route with status {response.status}"
                 )
-            return await response.json()
+            try:
+                return await response.json()
+            except ValueError:
+                raise RouterUnavailable("router replied with invalid JSON") from None
 
     async def log(self, record_id: str, result: dict[str, Any]) -> None:
         """Send the result of an action. A fault becomes a warning, not an error."""

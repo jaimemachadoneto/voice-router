@@ -72,6 +72,18 @@ async def test_a_timeout_is_unavailable(hass, aioclient_mock):
         await make_client(hass).route("turn on the light", "en", None, "c-1", None)
 
 
+async def test_a_non_json_reply_is_unavailable(hass, aioclient_mock):
+    """A route reply that is not JSON is an unavailability."""
+    aioclient_mock.post(
+        "http://router/route",
+        text="not json",
+        headers={"Content-Type": "text/plain"},
+    )
+
+    with pytest.raises(RouterUnavailable, match="invalid JSON"):
+        await make_client(hass).route("turn on the light", "en", None, "c-1", None)
+
+
 async def test_a_connection_error_is_unavailable(hass, aioclient_mock):
     """A router that refuses the connection is unavailable."""
     aioclient_mock.post("http://router/route", exc=aiohttp.ClientConnectionError())
