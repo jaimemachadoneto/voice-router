@@ -1,10 +1,14 @@
 """Tests for the client of the router service."""
 
+import logging
+
 import aiohttp
 import pytest
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from custom_components.voice_router.router_client import RouterClient, RouterUnavailable
+
+LOGGER_NAME = "custom_components.voice_router.router_client"
 
 ROUTE_REPLY = {
     "action": "turn_on",
@@ -76,13 +80,28 @@ async def test_a_connection_error_is_unavailable(hass, aioclient_mock):
         await make_client(hass).route("turn on the light", "en", None, "c-1", None)
 
 
-async def test_log_never_raises(hass, aioclient_mock):
+async def test_log_never_raises(hass, aioclient_mock, caplog):
     """A log call that the router refuses only writes a warning."""
     aioclient_mock.post("http://router/log", status=500)
 
-    await make_client(hass).log("record-1", {"status": "done"})
+    with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+        await make_client(hass).log("record-1", {"status": "done"})
 
     assert aioclient_mock.call_count == 1
+    warnings = [record for record in caplog.records if record.name == LOGGER_NAME]
+    assert len(warnings) == 1
+    assert "500" in warnings[0].getMessage()
+
+
+async def test_a_204_log_does_not_warn(hass, aioclient_mock, caplog):
+    """A log that the router saves with 204 writes no warning."""
+    aioclient_mock.post("http://router/log", status=204)
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+        await make_client(hass).log("record-1", {"status": "done"})
+
+    warnings = [record for record in caplog.records if record.name == LOGGER_NAME]
+    assert warnings == []
 
 
 async def test_the_token_is_sent(hass, aioclient_mock):

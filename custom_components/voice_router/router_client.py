@@ -103,7 +103,7 @@ class RouterClient:
         payload = {"record_id": record_id, "result": result}
         try:
             async with self._async_response("POST", "/log", payload) as response:
-                if response.status != 200:
+                if response.status not in (200, 204):
                     _LOGGER.warning(
                         "The router did not save the log of record %s: status %s",
                         record_id,
