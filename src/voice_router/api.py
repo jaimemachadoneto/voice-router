@@ -61,6 +61,17 @@ class LogBody(BaseModel):
     result: dict[str, Any]
 
 
+def app_from_env() -> FastAPI:
+    """Build the app from the process environment, for the container image.
+
+    Uvicorn calls this function with `--factory`. The settings give the token,
+    the key, the database path, the house words and the Jev model.
+    """
+    settings = Settings.from_env()
+    jev = Jev(settings.openrouter_key, model=settings.jev_model)
+    return create_app(settings, jev, Store(settings.db))
+
+
 def create_app(settings: Settings, jev: Jev, store: Store) -> FastAPI:
     """Build the app. A saved sync gives the house of the last run."""
 

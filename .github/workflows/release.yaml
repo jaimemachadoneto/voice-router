@@ -1,0 +1,24 @@
+# `deploy patch` pushes the vX.Y.Z tag that starts this workflow. It publishes
+# the image and opens the PR in home-ops that sets its tag.
+#
+# The project needs the MY_PAT secret: a token that can push a branch to
+# home-ops and open a PR there.
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  release:
+    uses: jaimemachadoneto/devbase/.github/workflows/image.yaml@main
+    with:
+      image: "ghcr.io/jaimemachadoneto/voice-router"
+      release: true
+      gitops-file: "kubernetes/apps/selfhosted/voice-router/app/helmrelease.yaml"
+    secrets:
+      gitops-token: ${{ secrets.MY_PAT }}

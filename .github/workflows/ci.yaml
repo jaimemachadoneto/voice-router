@@ -1,0 +1,22 @@
+# The shared devbase workflow runs the tests of the project and builds the
+# image on each pull request and each push to main.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: jaimemachadoneto/devbase/.github/workflows/project-ci.yaml@main
+    with:
+      stacks: "python"
+
+  image:
+    uses: jaimemachadoneto/devbase/.github/workflows/image.yaml@main
+    with:
+      image: "ghcr.io/jaimemachadoneto/voice-router"

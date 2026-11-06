@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from voice_router.aliases import load_word_data
-from voice_router.api import create_app
+from voice_router.api import app_from_env, create_app
 from voice_router.jev import Answer, Jev, Question
 from voice_router.settings import Settings
 from voice_router.store import Store
@@ -251,6 +251,20 @@ def test_the_settings_need_a_key(clean_env: pytest.MonkeyPatch):
     clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
     with pytest.raises(RuntimeError):
         Settings.from_env()
+
+
+def test_app_from_env_reads_the_settings(clean_env: pytest.MonkeyPatch, tmp_path: Path):
+    db = tmp_path / "env.db"
+    clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
+    clean_env.setenv("OPENROUTER_API_KEY", "test-key")
+    clean_env.setenv("VOICE_ROUTER_DB", str(db))
+    clean_env.setenv("VOICE_ROUTER_JEV_MODEL", "~typesafe/jev-test")
+
+    app = app_from_env()
+    response = TestClient(app).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "synced": False}
+    assert db.exists()
 
 
 def test_the_settings_refuse_two_key_sources(

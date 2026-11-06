@@ -1,0 +1,11 @@
+.git
+.devenv
+.direnv
+.local
+.superpowers
+tests
+__pycache__
+*.egg-info
+.pytest_cache
+.venv
+.ruff_cache
