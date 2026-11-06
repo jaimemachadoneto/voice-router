@@ -365,12 +365,12 @@ async def test_an_unrelated_answer_drops_the_pending_action(
         _decision(route="chat", act=False, record_id="record-2"),
     )
     await _ask(hass, "Desliga o carregador")
-    builtin = _result("It is noon")
+    model = AsyncMock(return_value=("It is noon", {}))
 
-    with patch(BUILTIN_MODULE, AsyncMock(return_value=builtin)) as mock:
+    with patch("custom_components.voice_router.conversation.run_model", model) as mock:
         result = await _ask(hass, "Que horas são?")
 
-    assert result is builtin
+    assert _speech(result) == "It is noon"
     mock.assert_awaited_once()
     assert calls == []
     route_calls = _calls_to(aioclient_mock, ROUTE_URL)

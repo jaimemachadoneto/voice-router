@@ -27,6 +27,7 @@ from homeassistant.util.dt import utcnow
 
 from .const import CONF_RISKY, DEFAULT_RISKY, DOMAIN
 from .execute import NotSupported, UnknownEntity, execute
+from .llm_loop import ModelUnavailable, run_model
 from .phrases import phrase, yes_no
 from .router_client import RouterClient, RouterUnavailable
 from .sync import exposed_risky, is_risky
@@ -182,7 +183,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
             return await self._async_builtin(user_input)
 
         record_id = decision.get("record_id", "")
-        route = decision.get("route")
+        route: str = decision.get("route", "")
 
         if route == DEVICE_COMMAND and decision.get("act"):
             entity_ids = decision.get("entity_ids", [])
@@ -224,6 +225,12 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
                 language, conversation_id, phrase("no_internet", language)
             )
 
-        # TODO: Replace this handover with run_model for chat and complex in Task 16.
-        self._async_log(record_id, {"status": "builtin"})
-        return await self._async_builtin(user_input)
+        try:
+            reply, result = await run_model(
+                self.hass, self._entry, user_input, chat_log, route
+            )
+        except ModelUnavailable:
+            reply = phrase("no_internet", language)
+            result = {"error": "model_unavailable"}
+        self._async_log(record_id, result)
+        return self._reply(language, conversation_id, reply)
