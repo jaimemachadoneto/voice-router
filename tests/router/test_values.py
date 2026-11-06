@@ -34,7 +34,7 @@ from voice_router.values import Value, parse_value, resolve
             Value("percent", 30),
         ),
         (
-            "Baja las luces del churrasco al cuarenta por ciento",
+            "Baja las luces del estudio al cuarenta por ciento",
             "light",
             Value("percent", 40),
         ),

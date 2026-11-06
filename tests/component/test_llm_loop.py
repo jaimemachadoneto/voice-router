@@ -14,6 +14,7 @@ from homeassistant.components.conversation import ChatLog, ConversationInput
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 from openai.types import CompletionUsage
@@ -46,6 +47,7 @@ from custom_components.voice_router.const import (
 from custom_components.voice_router.conversation import VoiceRouterAgent
 from custom_components.voice_router.llm_loop import (
     MAX_TOOL_ITERATIONS,
+    MODEL_TIMEOUT,
     ModelUnavailable,
     run_model,
 )
@@ -324,7 +326,12 @@ async def test_chat_sends_no_tools(
 
     assert "tools" not in client.calls[0]
     assert client.calls[0]["model"] == CHAT_MODEL
-    assert client.init_kwargs == {"base_url": "http://llm", "api_key": "k"}
+    assert client.init_kwargs == {
+        "base_url": "http://llm",
+        "api_key": "k",
+        "timeout": MODEL_TIMEOUT,
+        "max_retries": 0,
+    }
     assert client.closed is True
 
 
@@ -430,6 +437,91 @@ async def test_a_connection_error_is_model_unavailable(
         result = await _ask(hass, "Que horas são?")
 
     assert _speech(result) == NO_INTERNET_PT
+
+
+def _user_input(text: str = "Que horas são?") -> ConversationInput:
+    """Make the input of one request."""
+    return ConversationInput(
+        text=text,
+        context=Context(),
+        conversation_id=CONVERSATION_ID,
+        device_id=None,
+        satellite_id=None,
+        language="pt",
+        agent_id=AGENT_ID,
+    )
+
+
+async def test_a_timeout_is_model_unavailable(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A timeout raises ModelUnavailable."""
+    request = httpx2.Request("POST", "http://llm")
+    client = FakeClient()
+    client.answers = [openai.APITimeoutError(request=request)]
+
+    with (
+        _patch_client(client),
+        pytest.raises(ModelUnavailable),
+    ):
+        await run_model(
+            hass,
+            entry,
+            _user_input(),
+            ChatLog(hass, CONVERSATION_ID),
+            "chat",
+        )
+
+
+async def test_a_5xx_is_model_unavailable(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A 5xx answer raises ModelUnavailable."""
+    request = httpx2.Request("POST", "http://llm")
+    response = httpx2.Response(500, request=request)
+    client = FakeClient()
+    client.answers = [
+        openai.InternalServerError("the model failed", response=response, body=None)
+    ]
+
+    with (
+        _patch_client(client),
+        pytest.raises(ModelUnavailable),
+    ):
+        await run_model(
+            hass,
+            entry,
+            _user_input(),
+            ChatLog(hass, CONVERSATION_ID),
+            "chat",
+        )
+
+
+async def test_a_prior_turn_cannot_supply_the_tool_names(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The reply and the tool names come from the current request only."""
+    chat_log = ChatLog(hass, CONVERSATION_ID)
+    chat_log.content.extend(
+        [
+            conversation.UserContent(content="an old request"),
+            conversation.AssistantContent(
+                agent_id=AGENT_ID,
+                content="an old reply",
+                tool_calls=[
+                    llm.ToolInput(tool_name="intent__HassTurnOff", tool_args={})
+                ],
+            ),
+        ]
+    )
+    client = FakeClient()
+    client.answers = [_text_answer("It is noon")]
+
+    with _patch_client(client):
+        reply, result = await run_model(hass, entry, _user_input(), chat_log, "chat")
+
+    assert reply == "It is noon"
+    assert result["tools"] == []
 
 
 async def test_the_chat_prompt_has_the_date_and_the_language(

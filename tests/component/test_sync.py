@@ -15,6 +15,7 @@ from homeassistant.components.homeassistant.exposed_entities import (
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry
 from homeassistant.util import dt as dt_util
@@ -147,6 +148,30 @@ async def test_the_payload_has_the_exposed_entities_and_the_risky_ones(
         "Office": [],
     }
     assert payload["registry_hash"].startswith("sha256:")
+
+
+async def test_the_payload_uses_the_area_of_the_device(
+    hass: HomeAssistant, house: dict[str, str], entry: MockConfigEntry
+) -> None:
+    """An entity without an area of its own takes the area of its device."""
+    entry.add_to_hass(hass)
+    kitchen = ar.async_get(hass).async_get_area_by_name("Kitchen")
+    assert kitchen is not None
+    registry = dr.async_get(hass)
+    device = registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "kitchen_device")},
+        name="Kitchen device",
+    )
+    registry.async_update_device(device.id, area_id=kitchen.id)
+    er.async_get(hass).async_update_entity(
+        house["kitchen"], device_id=device.id, area_id=None
+    )
+
+    payload = build_payload(hass, RISKY)
+
+    entities = {entity["entity_id"]: entity for entity in payload["entities"]}
+    assert entities[house["kitchen"]]["area"] == "Kitchen"
 
 
 async def test_a_garage_cover_is_risky(

@@ -20,6 +20,7 @@ from homeassistant.helpers.area_registry import EVENT_AREA_REGISTRY_UPDATED
 from homeassistant.helpers.device_registry import EVENT_DEVICE_REGISTRY_UPDATED
 from homeassistant.helpers.entity_registry import (
     EVENT_ENTITY_REGISTRY_UPDATED,
+    async_get_effective_area_id,
     async_get_entity_aliases,
     async_get_full_entity_name,
 )
@@ -110,7 +111,7 @@ def build_payload(hass: HomeAssistant, risky: list[str]) -> dict[str, Any]:
             {
                 "entity_id": entry.entity_id,
                 "name": _entity_name(hass, entry),
-                "area": _area_name(hass, entry.area_id),
+                "area": _area_name(hass, async_get_effective_area_id(hass, entry)),
                 "aliases": async_get_entity_aliases(hass, entry),
                 "risky": entity_is_risky,
             }

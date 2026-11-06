@@ -33,6 +33,7 @@ from .const import (
 )
 
 MAX_TOOL_ITERATIONS = 10
+MODEL_TIMEOUT = 30.0
 
 CHAT_PROMPT = (
     "You are a voice assistant. Answer the request in the language "
@@ -201,6 +202,8 @@ async def run_model(
     client = AsyncOpenAI(
         base_url=entry.data[CONF_LITELLM_URL],
         api_key=entry.data[CONF_LITELLM_KEY],
+        timeout=MODEL_TIMEOUT,
+        max_retries=0,
     )
     start = time.monotonic()
     usage_holder: dict[str, Any] = {}
@@ -231,8 +234,11 @@ async def run_model(
     finally:
         await client.close()
 
+    # The scan starts at the first content of this request, so a prior turn
+    # cannot supply the reply or its tool names.
+    new_content = chat_log.content[chat_log.llm_input_provided_index :]
     reply = ""
-    for content in reversed(chat_log.content):
+    for content in reversed(new_content):
         if (
             isinstance(content, conversation.AssistantContent)
             and content.content is not None
@@ -242,7 +248,7 @@ async def run_model(
 
     tool_names = [
         tool_call.tool_name
-        for content in chat_log.content
+        for content in new_content
         if isinstance(content, conversation.AssistantContent)
         for tool_call in content.tool_calls or []
     ]

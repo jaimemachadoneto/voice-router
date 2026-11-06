@@ -12,6 +12,7 @@ from homeassistant.components.conversation import (
     HOME_ASSISTANT_AGENT,
     ConversationResult,
 )
+from homeassistant.components.conversation.agent_manager import get_agent_manager
 from homeassistant.components.homeassistant.exposed_entities import (
     async_expose_entity,
 )
@@ -36,6 +37,7 @@ from custom_components.voice_router.const import (
     CONF_ROUTER_URL,
     DOMAIN,
 )
+from custom_components.voice_router.conversation import VoiceRouterAgent
 
 ROUTER = "http://router"
 ROUTE_URL = f"{ROUTER}/route"
@@ -151,12 +153,13 @@ async def _ask(
     hass: HomeAssistant,
     text: str,
     device_id: str | None = None,
+    conversation_id: str = CONVERSATION_ID,
 ) -> ConversationResult:
     """Ask the voice router agent one sentence."""
     result = await conversation.async_converse(
         hass,
         text,
-        CONVERSATION_ID,
+        conversation_id,
         Context(),
         language="pt",
         agent_id=AGENT_ID,
@@ -183,19 +186,27 @@ async def test_a_device_command_acts_and_says_done(
 async def test_the_room_of_the_satellite_goes_to_the_router(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:
-    """The area of the satellite device goes to the router as the room."""
+    """The effective area of the satellite device goes to the router as the room."""
     calls = async_mock_service(hass, "light", "turn_off")
     hass.states.async_set("light.kitchen", "on")
     await _setup(hass, entry, aioclient_mock, _decision(entity_ids=["light.kitchen"]))
     area = ar.async_get(hass).async_create("Kitchen")
-    device = dr.async_get(hass).async_get_or_create(
+    registry = dr.async_get(hass)
+    parent = registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "satellite_parent")},
+        name="Satellite parent",
+    )
+    registry.async_update_device(parent.id, area_id=area.id)
+    # The satellite has no area of its own; it takes the area of its parent.
+    satellite = registry.async_get_or_create_child(
         config_entry_id=entry.entry_id,
         identifiers={("test", "satellite")},
         name="Satellite",
+        parent_device_id=parent.id,
     )
-    dr.async_get(hass).async_update_device(device.id, area_id=area.id)
 
-    await _ask(hass, "Desliga a luz", device_id=device.id)
+    await _ask(hass, "Desliga a luz", device_id=satellite.id)
 
     assert _calls_to(aioclient_mock, ROUTE_URL)[0][2]["room"] == "Kitchen"
     assert calls[0].data["entity_id"] == "light.kitchen"
@@ -347,6 +358,34 @@ async def test_a_confirmation_expires_after_30_seconds(
     assert _speech(result) == CONFIRM_PT
     assert calls == []
     assert len(_calls_to(aioclient_mock, ROUTE_URL)) == 2
+
+
+async def test_a_new_request_purges_the_expired_pendings(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    aioclient_mock,
+    car_charger: str,
+    freezer,
+) -> None:
+    """A new request removes an expired pending action of another conversation."""
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(entity_ids=[car_charger]),
+        _decision(route="chat", act=False, record_id="record-2"),
+    )
+    await _ask(hass, "Desliga o carregador")
+    agent = get_agent_manager(hass).async_get_agent(entry.entry_id)
+    assert isinstance(agent, VoiceRouterAgent)
+    assert len(agent.pending) == 1
+
+    freezer.tick(timedelta(seconds=31))
+    model = AsyncMock(return_value=("It is noon", {}))
+    with patch("custom_components.voice_router.conversation.run_model", model):
+        await _ask(hass, "Que horas são?", conversation_id="conv-2")
+
+    assert agent.pending == {}
 
 
 async def test_an_unrelated_answer_drops_the_pending_action(

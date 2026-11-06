@@ -39,7 +39,7 @@ class SyncEntity(BaseModel):
 class SyncBody(BaseModel):
     """The house of one sync: the entities, the areas and the registry hash."""
 
-    entities: list[SyncEntity]
+    entities: list[SyncEntity] = Field(max_length=1000)
     areas: dict[str, list[str]] = Field(default_factory=dict)
     registry_hash: str
 
@@ -47,7 +47,7 @@ class SyncBody(BaseModel):
 class RouteBody(BaseModel):
     """One spoken command, with the context of the satellite."""
 
-    text: str
+    text: str = Field(max_length=1000)
     language: str | None = None
     room: str | None = None
     conversation_id: str | None = None

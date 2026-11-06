@@ -9,7 +9,7 @@ The project has two parts:
   sends the house in one sync, sends each command to `/route`, and sends the
   result of the action to `/log`.
 - The Home Assistant component: a custom component. It syncs the house and
-  calls the router service. The component is not in this stage yet.
+  calls the router service.
 
 ## Environment variables
 
@@ -44,14 +44,40 @@ The router joins the two layers. The general words come first, and the house
 words follow with no duplicate. The `alias_version` in the answer is a digest
 of both files.
 
+## Home Assistant component
+
+The component is in `custom_components/voice_router/`. Install it as a HACS
+custom repository.
+
+The config flow asks for these values:
+
+- the URL and the token of the router;
+- the URL and the key of LiteLLM.
+
+The options flow sets these values:
+
+- the model alias of the `chat` route and of the `complex` route;
+- the Home Assistant LLM APIs of the `complex` route;
+- the risky list;
+- the timeout of the router.
+
+Add the risky entities of the site in the options flow. The repository holds
+only the generic defaults, so no site entity is in git.
+
+The phase-1 device service map has no `lock` service and no
+`alarm_control_panel` service. A confirmed lock command goes to the built-in
+agent.
+
 ## Run it
 
 Enter the project shell and install the package:
 
 ```sh
 devenv shell
-uv pip install -e ".[dev]"
+uv sync --extra dev
 ```
+
+The `uv sync` command makes `uv.lock`. Do not commit `uv.lock`.
 
 Run the test suite with `check`:
 
@@ -89,8 +115,12 @@ name, the area (with its aliases) and the aliases of each offered device to
 OpenRouter System One. OpenRouter is a third party. The router sends nothing
 else.
 
-The token and the OpenRouter key are secrets. Never put a secret in git, in a
-log line or in an error message.
+For a `chat` or a `complex` command, the component sends the conversation text
+and the offered device texts to the LiteLLM endpoint. A `complex` command uses
+the Home Assistant Assist API tools.
+
+The token, the OpenRouter key and the LiteLLM key are secrets. Never put a
+secret in git, in a log line or in an error message.
 
 ## Release status
 

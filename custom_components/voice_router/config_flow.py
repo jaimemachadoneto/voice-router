@@ -9,6 +9,11 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     CONF_CHAT_MODEL,
@@ -62,9 +67,13 @@ class VoiceRouterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_ROUTER_URL): str,
-                    vol.Required(CONF_ROUTER_TOKEN): str,
+                    vol.Required(CONF_ROUTER_TOKEN): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
                     vol.Required(CONF_LITELLM_URL): str,
-                    vol.Required(CONF_LITELLM_KEY): str,
+                    vol.Required(CONF_LITELLM_KEY): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
                 }
             ),
             errors=errors,
@@ -129,7 +138,7 @@ class VoiceRouterOptionsFlow(config_entries.OptionsFlow):
                         default=options.get(
                             CONF_ROUTER_TIMEOUT, DEFAULT_ROUTER_TIMEOUT
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0.1)),
                 }
             ),
         )

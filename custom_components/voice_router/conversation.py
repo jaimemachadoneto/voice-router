@@ -48,13 +48,16 @@ class Pending:
 
 
 def _room_name(hass: HomeAssistant, device_id: str | None) -> str | None:
-    """Give the name of the area of the device, or None without an area."""
+    """Give the effective area name of the device, or None without an area."""
     if device_id is None:
         return None
     device = dr.async_get(hass).async_get(device_id)
-    if device is None or device.area_id is None:
+    if device is None:
         return None
-    area = ar.async_get(hass).async_get_area(device.area_id)
+    area_id = dr.async_get_effective_area_id(hass, device)
+    if area_id is None:
+        return None
+    area = ar.async_get(hass).async_get_area(area_id)
     return area.name if area is not None else None
 
 
@@ -119,6 +122,13 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         if record_id:
             self.hass.async_create_task(self._client.log(record_id, result))
 
+    def _purge_pendings(self) -> None:
+        """Remove each pending action whose time is past."""
+        now = utcnow()
+        for conversation_id in list(self.pending):
+            if self.pending[conversation_id].expires <= now:
+                del self.pending[conversation_id]
+
     def _any_exposed(self, entity_ids: list[str], risky: list[str]) -> bool:
         """Tell if a risky entity of the decision is exposed to conversation."""
         exposed = set(exposed_risky(self.hass, risky))
@@ -144,6 +154,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         conversation_id = user_input.conversation_id or ""
         text = user_input.text
 
+        self._purge_pendings()
         pending = self.pending.get(conversation_id)
         if pending is not None and pending.expires > utcnow():
             answer = yes_no(text)

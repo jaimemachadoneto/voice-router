@@ -153,6 +153,25 @@ def test_route_before_any_sync_is_503(settings: Settings):
     assert response.json() == {"detail": "no sync"}
 
 
+def test_a_text_over_1000_characters_is_refused(settings: Settings):
+    client = make_client(settings)
+    response = client.post(
+        "/route", json={**ROUTE_BODY, "text": "a" * 1001}, headers=HEADERS
+    )
+    assert response.status_code == 422
+
+
+def test_a_sync_over_1000_entities_is_refused(settings: Settings):
+    client = make_client(settings)
+    entity = PAYLOAD["entities"][0]
+    response = client.post(
+        "/sync",
+        json={**PAYLOAD, "entities": [entity] * 1001},
+        headers=HEADERS,
+    )
+    assert response.status_code == 422
+
+
 def test_health_needs_no_token(settings: Settings):
     client = make_client(settings)
     response = client.get("/health")
