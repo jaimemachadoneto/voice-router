@@ -1,5 +1,6 @@
 """The store: the last sync and the log of requests, in SQLite."""
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -99,6 +100,55 @@ def test_the_first_sync_of_a_version_gives_the_stale_time(tmp_path: Path):
     store.save_sync(PAYLOAD, "sha256:current")
 
     assert store.first_sync_at("sha256:current") == first
+
+
+def test_a_legacy_duplicate_word_opens_as_one_row(tmp_path: Path):
+    """Two rows of one folded word and entity must not stop the store."""
+    path = tmp_path / "router.db"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE proposals("
+            "id TEXT PRIMARY KEY, word TEXT, meaning TEXT, domain TEXT,"
+            " entity_id TEXT, at TEXT, status TEXT, commands TEXT)"
+        )
+        db.executemany(
+            "INSERT INTO proposals"
+            "(id, word, meaning, domain, entity_id, at, status, commands)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "one",
+                    "Abajur",
+                    "a light",
+                    "light",
+                    "light.sala",
+                    "2026-01-01",
+                    "proposed",
+                    json.dumps(["liga o Abajur"]),
+                ),
+                (
+                    "two",
+                    "abajur",
+                    "a light",
+                    "light",
+                    "light.sala",
+                    "2026-01-02",
+                    "proposed",
+                    json.dumps(["apaga o abajur"]),
+                ),
+            ],
+        )
+        db.commit()
+
+    store = Store(path)
+
+    rows = store.list_proposals()
+    assert len(rows) == 1
+    assert rows[0]["word"] == "Abajur"
+    assert rows[0]["commands"] == ["liga o Abajur", "apaga o abajur"]
+    with sqlite3.connect(path) as db:
+        indexes = {row[1] for row in db.execute("PRAGMA index_list(proposals)")}
+    assert "proposals_word_entity" in indexes
 
 
 def test_an_existing_database_gets_the_alias_version_column(tmp_path: Path):

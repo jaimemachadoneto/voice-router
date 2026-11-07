@@ -55,6 +55,39 @@ def _proposal(row: tuple) -> dict[str, Any]:
     }
 
 
+def _dedupe_proposals(db: sqlite3.Connection) -> None:
+    """Keep one row for each folded word and entity.
+
+    An old version could write two rows for one pair: two spellings of one
+    word, or two writers of a race. The unique index cannot start on such a
+    database. The row with the lowest rowid stays, its commands join the
+    commands of the other rows, and the other rows go.
+    """
+    groups = db.execute(
+        "SELECT word_key, entity_id FROM proposals"
+        " GROUP BY word_key, entity_id HAVING COUNT(*) > 1"
+    ).fetchall()
+    for word_key, entity_id in groups:
+        rows = db.execute(
+            "SELECT id, commands FROM proposals"
+            " WHERE word_key IS ? AND entity_id IS ? ORDER BY rowid",
+            (word_key, entity_id),
+        ).fetchall()
+        commands: list[str] = []
+        for _, stored in rows:
+            for text in json.loads(stored) if stored else []:
+                if text not in commands and len(commands) < PROPOSAL_COMMANDS:
+                    commands.append(text)
+        db.execute(
+            "UPDATE proposals SET commands = ? WHERE id = ?",
+            (json.dumps(commands), rows[0][0]),
+        )
+        db.executemany(
+            "DELETE FROM proposals WHERE id = ?",
+            [(row[0],) for row in rows[1:]],
+        )
+
+
 def _migrate(db: sqlite3.Connection) -> None:
     """Add the columns of a later version to a database of an earlier one.
 
@@ -73,12 +106,17 @@ def _migrate(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE proposals ADD COLUMN after_count INTEGER")
     if "word_key" not in proposal_columns:
         db.execute("ALTER TABLE proposals ADD COLUMN word_key TEXT")
-        rows = db.execute("SELECT id, word FROM proposals").fetchall()
-        for row in rows:
-            db.execute(
-                "UPDATE proposals SET word_key = ? WHERE id = ?",
-                (fold(row[1] or ""), row[0]),
-            )
+    # A row of an old version has no folded key, so fill it before the dedupe.
+    rows = db.execute(
+        "SELECT id, word FROM proposals WHERE word_key IS NULL"
+    ).fetchall()
+    for record_id, word in rows:
+        db.execute(
+            "UPDATE proposals SET word_key = ? WHERE id = ?",
+            (fold(word or ""), record_id),
+        )
+    # The unique index cannot start while an old duplicate exists.
+    _dedupe_proposals(db)
     # The folded word and the entity give one row, also after a race of two
     # writers. The display spelling stays in `word`. The display pair is
     # unique too, as the table contract says.

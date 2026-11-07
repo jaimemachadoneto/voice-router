@@ -12,14 +12,16 @@ executes.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import asdict, dataclass
 
 from voice_router.aliases import actions_in, has_question_word
 from voice_router.house import FilterResult, House
 from voice_router.jev import Answer, Jev, JevError, Question
+from voice_router.proposals import STOP_WORDS, missed_word
 from voice_router.questions import ACTION, ACTION_Q, ROUTE, ROUTE_Q, device_question
 from voice_router.values import resolve
-from voice_router.words import NONE, choose
+from voice_router.words import NONE, Entity, choose, fold
 
 DEVICE_COMMAND = "device_command"
 OFFLINE = "offline"
@@ -63,19 +65,37 @@ class Decision:
     proposal: dict | None = None
 
 
-def _diagnosis_options(house: House, room: str | None) -> list[str]:
-    """The entities of the diagnosis question, sorted and capped.
+_WORD = re.compile(r"\w+", re.UNICODE)
 
-    The question shows the devices of the satellite room when the room has
-    devices, else all devices. The entity id gives the order, so two calls
-    give the same list.
+
+def _text_words(text: str) -> set[str]:
+    """The folded words of a text, with no stop word and no one-letter word."""
+    found = {fold(word) for word in _WORD.findall(text)}
+    return {word for word in found if len(word) > 1 and word not in STOP_WORDS}
+
+
+def _entity_words(entity: Entity) -> set[str]:
+    """The folded words of the name and the aliases of an entity."""
+    return _text_words(" ".join((entity.name, *entity.aliases)))
+
+
+def _diagnosis_options(house: House, room: str | None, text: str) -> list[str]:
+    """The entities of the diagnosis question, ranked and capped.
+
+    A word of the command that names an entity is the strongest sign, because
+    the person said the name of the device. An entity of the satellite room is
+    the next sign. The entity id gives a stable tiebreak, so two calls give the
+    same list.
     """
-    entities = list(house.entities.values())
-    if room is not None:
-        in_room = sorted(e.entity_id for e in entities if e.area == room)
-        if in_room:
-            return in_room[:DIAGNOSIS_LIMIT]
-    return sorted(e.entity_id for e in entities)[:DIAGNOSIS_LIMIT]
+    said = _text_words(text)
+
+    def key(entity: Entity) -> tuple[int, int, str]:
+        named = 0 if said & _entity_words(entity) else 1
+        local = 0 if room is not None and entity.area == room else 1
+        return (named, local, entity.entity_id)
+
+    entities = sorted(house.entities.values(), key=key)
+    return [entity.entity_id for entity in entities][:DIAGNOSIS_LIMIT]
 
 
 def _questions(
@@ -99,7 +119,7 @@ def _questions(
     elif options is None and actions_in(text, house.words):
         # The call returns the route too, so the question goes on every
         # route. Only a device command with no set makes a proposal.
-        candidates = _diagnosis_options(house, room)
+        candidates = _diagnosis_options(house, room, text)
         if candidates:
             questions.append(device_question(candidates, house))
     return questions
@@ -292,7 +312,7 @@ async def _decide(
             # command does not act, because the words gave no set.
             decision.proposal = {
                 "device": device.choice,
-                "options": _diagnosis_options(house, room),
+                "options": _diagnosis_options(house, room, text),
             }
         return decision
     if not options:
@@ -332,7 +352,17 @@ async def _decide(
             )
     if device is not None and device.choice not in options and device.choice != NONE:
         # A choice outside the offer is not one of the devices of the command.
-        return _no_act(f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record)
+        # The words of the command may still name a word that no list holds,
+        # with the device as its meaning. The command does not act.
+        decision = _no_act(
+            f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record
+        )
+        if missed_word(text, house.words) is not None:
+            decision.proposal = {
+                "device": device.choice,
+                "options": list(options),
+            }
+        return decision
     chosen = choose(options, device.probabilities if device is not None else None)
     if not chosen:
         return _no_act(f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record)

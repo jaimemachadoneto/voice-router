@@ -110,24 +110,8 @@ def _known(words: WordData) -> set[str]:
     return known
 
 
-def candidate(record: dict, words: WordData) -> tuple[str, str] | None:
-    """The most specific missed word of a record, and the entity of the proposal.
-
-    The record must hold no set of options and a proposal device that is not
-    NONE. The candidate is a word of the command that no list covers, the stop
-    words and one-letter words aside. The longest such word wins, then the
-    earliest.
-    """
-    decision = record.get("decision") or {}
-    if decision.get("options") is not None:
-        return None
-    proposal = decision.get("proposal")
-    if not isinstance(proposal, dict):
-        return None
-    entity_id = proposal.get("device")
-    if not isinstance(entity_id, str) or entity_id == NONE:
-        return None
-    text = (record.get("request") or {}).get("text") or ""
+def _candidate_word(text: str, words: WordData) -> str | None:
+    """The most specific word of a command that no list holds, or None."""
     known = _known(words)
     best: tuple[int, int] | None = None
     chosen: str | None = None
@@ -139,6 +123,47 @@ def candidate(record: dict, words: WordData) -> tuple[str, str] | None:
         key = (-len(token), index)
         if best is None or key < best:
             best, chosen = key, raised
+    return chosen
+
+
+def missed_word(text: str, words: WordData) -> str | None:
+    """The most specific word of a command that no list holds, or None.
+
+    The longest word wins, then the earliest. The stop words and one-letter
+    words aside. The route uses it to know whether the command holds a word
+    that a proposal can add.
+    """
+    return _candidate_word(text, words)
+
+
+def candidate(record: dict, words: WordData, house: House) -> tuple[str, str] | None:
+    """The most specific missed word of a record, and the entity of the proposal.
+
+    The record must hold a proposal device that is not NONE, and the device
+    must be one that the question offered. A set of options gives a device
+    outside that set, which must be an entity of the house. No set gives the
+    diagnosis answer, which must be one of the offered candidates. The
+    candidate is a word of the command that no list covers, the stop words and
+    one-letter words aside. The longest such word wins, then the earliest.
+    """
+    decision = record.get("decision") or {}
+    options = decision.get("options")
+    if options is not None and not options:
+        return None
+    proposal = decision.get("proposal")
+    if not isinstance(proposal, dict):
+        return None
+    entity_id = proposal.get("device")
+    if not isinstance(entity_id, str) or entity_id == NONE:
+        return None
+    if options is None:
+        offered = proposal.get("options")
+        if not isinstance(offered, list) or entity_id not in offered:
+            return None
+    elif entity_id in options or entity_id not in house.entities:
+        return None
+    text = (record.get("request") or {}).get("text") or ""
+    chosen = _candidate_word(text, words)
     if chosen is None:
         return None
     return chosen, entity_id
@@ -197,9 +222,10 @@ def _counts(
 ) -> tuple[int, int]:
     """The option counts before and after the word joins the list.
 
-    The record holds no set of options, so the filter selected no device: the
-    count before the word is 0. The count after is the set of the same command
-    and room with the word as an entity word of the entity that Jev named.
+    The record holds the set that the filter selected, or None when it selected
+    none. The count before the word is the size of that set: no set gives 0.
+    The count after is the set of the same command and room with the word as
+    an entity word of the entity that Jev named.
     """
     decision = record.get("decision") or {}
     before = len(decision.get("options") or [])
@@ -231,7 +257,7 @@ def record_proposal(store: Store, house: House, record: dict) -> dict | None:
     words of the entity that the proposal named, and the option count is
     measured.
     """
-    found = candidate(record, house.words)
+    found = candidate(record, house.words, house)
     if found is None:
         return None
     word, entity_id = found

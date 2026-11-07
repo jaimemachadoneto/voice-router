@@ -199,8 +199,119 @@ async def test_the_diagnosis_answer_makes_a_proposal_and_does_not_act(house: Hou
     assert decision.entity_ids == []
     assert decision.proposal == {
         "device": "light.office_lamp",
-        "options": ["fan.office", "light.office_ceiling", "light.office_lamp"],
+        "options": [
+            "fan.office",
+            "light.office_ceiling",
+            "light.office_lamp",
+            "light.kitchen_ceiling",
+            "light.kitchen_table",
+            "lock.front",
+        ],
     }
+
+
+def _rank_house(entities: list[dict], areas: dict[str, list[str]]) -> House:
+    """A house with one invented room and its invented entities."""
+    return House.from_sync(
+        {"entities": entities, "areas": areas, "registry_hash": "sha256:rank"},
+        load_word_data(None),
+    )
+
+
+def _rank_entity(entity_id: str, name: str, area: str) -> dict:
+    return {
+        "entity_id": entity_id,
+        "name": name,
+        "area": area,
+        "aliases": [],
+        "risky": False,
+    }
+
+
+async def test_the_diagnosis_list_offers_a_room_entity_that_shares_a_word():
+    """The target is last by id in a room of 12, but a word makes it first."""
+    entities = [
+        _rank_entity(f"light.office_{index:02d}", f"Luz {index}", "Office")
+        for index in range(11)
+    ]
+    target = "light.office_zz"
+    entities.append(_rank_entity(target, "Abajur do Escritório", "Office"))
+    house = _rank_house(entities, {"Office": ["office"]})
+    jev = FakeJev(action="turn_on", device=target)
+
+    decision = await decide("liga o abajur", "Office", house, jev)
+
+    assert decision.act is False
+    assert decision.proposal is not None
+    assert decision.proposal["device"] == target
+    assert target in decision.proposal["options"]
+    assert decision.proposal["options"][0] == target
+
+
+async def test_a_word_share_beats_the_room_of_an_unrelated_entity():
+    """An outside entity that the command names is offered before a room one."""
+    house = _rank_house(
+        [
+            _rank_entity("light.office_a", "Luz A", "Office"),
+            _rank_entity("light.office_b", "Luz B", "Office"),
+            _rank_entity("light.kitchen_lustre", "Lustre da Cozinha", "Kitchen"),
+        ],
+        {"Office": ["office"], "Kitchen": ["kitchen"]},
+    )
+    jev = FakeJev(action="turn_on", device="light.kitchen_lustre")
+
+    decision = await decide("liga o lustre", "Office", house, jev)
+
+    assert decision.proposal is not None
+    options = decision.proposal["options"]
+    assert "light.office_a" in options
+    assert options.index("light.kitchen_lustre") < options.index("light.office_a")
+
+    again = await decide(
+        "liga o lustre",
+        "Office",
+        house,
+        FakeJev(action="turn_on", device="light.kitchen_lustre"),
+    )
+    assert again.proposal is not None
+    assert again.proposal["options"] == options
+
+
+async def test_a_device_outside_the_set_makes_a_proposal_and_does_not_act(house: House):
+    jev = FakeJev(
+        device="lock.front",
+        probabilities={"lock.front": 0.9, "none": 0.1},
+    )
+
+    decision = await decide("liga as luzes do abajur", None, house, jev)
+
+    assert decision.act is False
+    assert decision.reason == "low_confidence"
+    assert decision.entity_ids == []
+    assert decision.proposal == {
+        "device": "lock.front",
+        "options": [
+            "light.kitchen_ceiling",
+            "light.kitchen_table",
+            "light.office_lamp",
+            "light.office_ceiling",
+        ],
+    }
+
+
+async def test_a_device_outside_the_set_with_no_missed_word_makes_no_proposal(
+    house: House,
+):
+    jev = FakeJev(
+        device="lock.front",
+        probabilities={"lock.front": 0.9, "none": 0.1},
+    )
+
+    decision = await decide("liga as luzes", None, house, jev)
+
+    assert decision.act is False
+    assert decision.reason == "low_confidence"
+    assert decision.proposal is None
 
 
 async def test_a_none_diagnosis_answer_makes_no_proposal(house: House):

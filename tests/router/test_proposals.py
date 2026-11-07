@@ -100,6 +100,45 @@ THREE_LIGHTS = {
 }
 
 
+# Three lights in the Sala and one outside it, for the mixed-case tests. The
+# word "luzes" names the domain, so the filter selects the three lights of the
+# Sala. The word "lustre" is in no list, and it names the fourth light.
+SALA_LIGHTS = {
+    "entities": [
+        {
+            "entity_id": "light.sala_1",
+            "name": "Luz da Sala 1",
+            "area": "Sala",
+            "aliases": [],
+            "risky": False,
+        },
+        {
+            "entity_id": "light.sala_2",
+            "name": "Luz da Sala 2",
+            "area": "Sala",
+            "aliases": [],
+            "risky": False,
+        },
+        {
+            "entity_id": "light.sala_3",
+            "name": "Luz da Sala 3",
+            "area": "Sala",
+            "aliases": [],
+            "risky": False,
+        },
+        {
+            "entity_id": "light.lustre",
+            "name": "Lustre do Quarto",
+            "area": "Quarto",
+            "aliases": [],
+            "risky": False,
+        },
+    ],
+    "areas": {"Sala": ["sala"], "Quarto": ["quarto"]},
+    "registry_hash": "sha256:sala",
+}
+
+
 class FakeJev(Jev):
     """A Jev that is never asked: the log tests insert their records."""
 
@@ -156,7 +195,8 @@ def add_record(
         else {"error": "down"},
     }
     if device is not None:
-        decision["proposal"] = {"device": device}
+        offered = [device] if options is None else list(options)
+        decision["proposal"] = {"device": device, "options": offered}
     record_id = store.add_record(
         {
             "request": {"text": text, "language": language, "room": None},
@@ -243,6 +283,26 @@ def test_a_proposal_holds_the_change_sentence(store: Store, house: House):
     assert proposal["change"] == "no options become 1"
 
 
+def test_a_missed_word_beside_a_known_domain_word_makes_a_proposal(
+    store: Store, house: House
+):
+    record = add_record(
+        store,
+        "liga as luzes do lustre",
+        device="light.quarto",
+        options=["light.sala"],
+    )
+
+    proposal = proposals.record_proposal(store, house, record)
+
+    assert proposal is not None
+    assert proposal["word"] == "lustre"
+    assert proposal["entity_id"] == "light.quarto"
+    assert proposal["before_count"] == 1
+    assert proposal["after_count"] == 2
+    assert proposal["change"] == "1 option becomes 2"
+
+
 def test_the_same_word_from_two_entities_makes_two_proposals(
     store: Store, house: House
 ):
@@ -262,55 +322,74 @@ def test_the_same_word_from_two_entities_makes_two_proposals(
 def test_a_general_word_makes_no_proposal(store: Store, house: House):
     record = add_record(store, "turn on the light", language="en")
 
-    assert proposals.candidate(record, house.words) is None
+    assert proposals.candidate(record, house.words, house) is None
     assert proposals.record_proposal(store, house, record) is None
     assert proposals.list_proposals(store) == []
 
 
-def test_candidate_returns_none_when_the_filter_found_a_word(words: WordData):
+def test_candidate_reads_a_device_outside_the_filter_set(store: Store, house: House):
+    record = add_record(
+        store,
+        "liga as luzes do lustre",
+        device="light.quarto",
+        options=["light.sala"],
+    )
+
+    assert proposals.candidate(record, house.words, house) == (
+        "lustre",
+        "light.quarto",
+    )
+
+
+def test_candidate_returns_none_when_the_proposal_names_no_device(
+    store: Store, house: House
+):
+    none_device = add_record(store, "liga o abajur", device=NONE, options=None)
+    no_proposal = add_record(store, "liga o abajur", device=None)
+
+    assert proposals.candidate(none_device, house.words, house) is None
+    assert proposals.candidate(no_proposal, house.words, house) is None
+
+
+def test_candidate_refuses_a_diagnosis_device_that_was_not_offered(
+    store: Store, house: House
+):
     record = {
         "request": {"text": "liga o abajur"},
         "decision": {
-            "options": ["light.sala"],
-            "proposal": {"device": "light.sala"},
+            "options": None,
+            "proposal": {"device": "light.quarto", "options": ["light.sala"]},
         },
     }
 
-    assert proposals.candidate(record, words) is None
+    assert proposals.candidate(record, house.words, house) is None
 
 
-def test_candidate_returns_none_when_the_proposal_names_no_device(words: WordData):
-    none_device = {
-        "request": {"text": "liga o abajur"},
-        "decision": {"options": None, "proposal": {"device": NONE}},
-    }
-    no_proposal = {
-        "request": {"text": "liga o abajur"},
-        "decision": {"options": None},
-    }
+def test_candidate_refuses_a_missed_device_that_the_house_does_not_hold(
+    store: Store, house: House
+):
+    record = add_record(
+        store,
+        "liga as luzes do lustre",
+        device="light.gone",
+        options=["light.sala"],
+    )
 
-    assert proposals.candidate(none_device, words) is None
-    assert proposals.candidate(no_proposal, words) is None
+    assert proposals.candidate(record, house.words, house) is None
 
 
-def test_candidate_takes_the_longest_missed_word(words: WordData):
-    record = {
-        "request": {"text": "liga o abajur do teto"},
-        "decision": {"options": None, "proposal": {"device": "light.sala"}},
-    }
+def test_candidate_takes_the_longest_missed_word(store: Store, house: House):
+    record = add_record(store, "liga o abajur do teto", device="light.sala")
 
-    found = proposals.candidate(record, words)
+    found = proposals.candidate(record, house.words, house)
 
     assert found == ("abajur", "light.sala")
 
 
-def test_candidate_keeps_the_earliest_of_two_equal_words(words: WordData):
-    record = {
-        "request": {"text": "liga o teto e a mesa"},
-        "decision": {"options": None, "proposal": {"device": "light.sala"}},
-    }
+def test_candidate_keeps_the_earliest_of_two_equal_words(store: Store, house: House):
+    record = add_record(store, "liga o teto e a mesa", device="light.sala")
 
-    found = proposals.candidate(record, words)
+    found = proposals.candidate(record, house.words, house)
 
     assert found == ("teto", "light.sala")
 
@@ -573,3 +652,42 @@ def test_the_route_and_the_log_make_a_proposal(settings: Settings, store: Store)
     assert len(stored) == 1
     assert stored[0]["word"] == "abajur"
     assert stored[0]["entity_id"] == "light.sala"
+
+
+def test_the_common_missed_word_case_makes_a_proposal_at_the_log(
+    settings: Settings, store: Store
+):
+    """A synonym beside a known domain word: the set exists, the word does not."""
+    client = TestClient(create_app(settings, ApiFakeJev(device="light.lustre"), store))
+    client.post("/sync", json=SALA_LIGHTS, headers=HEADERS)
+
+    routed = client.post(
+        "/route",
+        json={"text": "liga as luzes do lustre", "language": "pt", "room": "Sala"},
+        headers=HEADERS,
+    )
+
+    assert routed.status_code == 200
+    body = routed.json()
+    assert body["act"] is False
+    assert body["proposal"]["device"] == "light.lustre"
+    assert body["proposal"]["options"] == [
+        "light.sala_1",
+        "light.sala_2",
+        "light.sala_3",
+    ]
+    assert proposals.list_proposals(store) == []
+
+    response = client.post(
+        "/log",
+        json={"record_id": body["record_id"], "result": {"status": "done"}},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 204
+    stored = proposals.list_proposals(store)
+    assert len(stored) == 1
+    assert stored[0]["word"] == "lustre"
+    assert stored[0]["entity_id"] == "light.lustre"
+    assert stored[0]["before_count"] == 3
+    assert stored[0]["after_count"] == 4
