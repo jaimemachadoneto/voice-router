@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from voice_router import compare
-from voice_router.compare import PROMOTION_AGREEMENT, PROMOTION_N, PROMOTION_P95
 from voice_router.words import NONE
 
 # The dashboard shows at most this many recent commands.
@@ -24,7 +23,7 @@ def _jev_choice(decision: dict) -> str:
     return device.get("choice") or NONE
 
 
-def _agreement(decision: dict, jev: str, kev: str) -> str:
+def _agreement(decision: dict, *, jev: str, kev: str) -> str:
     """The agreement of Kev with Jev, or none when both gave no choice."""
     if jev == NONE and kev == NONE:
         return "none"
@@ -33,12 +32,14 @@ def _agreement(decision: dict, jev: str, kev: str) -> str:
     return "disagree"
 
 
-def _outcome(decision: dict, result: dict) -> str:
-    """The result of one command: a correction, a confirmation, or no offer."""
+def _outcome(decision: dict, *, result: dict) -> str:
+    """The result of one command: a correction, a confirmation, a wait, or no offer."""
     if result.get("repeat") or result.get("correction"):
         return "correction"
     if result.get("pending") and result.get("status") == "done":
         return "confirmed"
+    if result.get("pending"):
+        return "waiting"
     if decision.get("act") is not True:
         return "no offer"
     return "done"
@@ -62,53 +63,18 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
         "language": request.get("language") or "en",
         "jev": names.get(jev, jev),
         "kev": names.get(kev, kev),
-        "agreement": _agreement(decision, jev, kev),
-        "outcome": _outcome(decision, record.get("result") or {}),
+        "agreement": _agreement(decision, jev=jev, kev=kev),
+        "outcome": _outcome(decision, result=record.get("result") or {}),
         "seconds": float(local.get("seconds") or 0.0),
     }
-
-
-def _criteria(commands: int, agreement: float, wrong: int, p95: float) -> list[dict]:
-    """The four switch criteria with the measured value of each.
-
-    The pass of the agreement uses the fraction, because the constant is a
-    fraction. The text of the row uses the percent, which the dashboard shows.
-    """
-    percent = round(agreement * 100, 1)
-    return [
-        {
-            "key": "commands",
-            "label": f"{PROMOTION_N} commands",
-            "measured": f"{commands} measured",
-            "pass": commands >= PROMOTION_N,
-        },
-        {
-            "key": "agreement",
-            "label": f"Agreement {PROMOTION_AGREEMENT * 100:.0f}%",
-            "measured": f"{percent:.1f}% measured",
-            "pass": agreement >= PROMOTION_AGREEMENT,
-        },
-        {
-            "key": "wrong",
-            "label": "No wrong action",
-            "measured": f"{wrong} wrong",
-            "pass": wrong == 0,
-        },
-        {
-            "key": "p95",
-            "label": f"p95 under {PROMOTION_P95} s",
-            "measured": f"{p95:.2f} s measured",
-            "pass": commands > 0 and p95 < PROMOTION_P95,
-        },
-    ]
 
 
 def summary(records: list[dict], names: Mapping[str, str] | None = None) -> dict:
     """The summary of the log for the dashboard.
 
     The counters come from the comparison of the local route with Jev. The
-    recent rows are the newest commands first. No action waits in this phase.
-    `names` maps an entity id to the device name that the dashboard shows.
+    recent rows are the newest commands first. `names` maps an entity id to
+    the device name that the dashboard shows.
     """
     names = names or {}
     counters = compare.summary(records)
@@ -122,7 +88,7 @@ def summary(records: list[dict], names: Mapping[str, str] | None = None) -> dict
         if (record.get("decision") or {}).get("route") == "device_command"
         and (record.get("decision") or {}).get("options") is None
     )
-    considered = [record for record in records if compare._considered(record)]
+    considered = compare.considered(records)
     recent = [_recent_row(record, names) for record in reversed(considered)][
         :RECENT_LIMIT
     ]
@@ -133,7 +99,7 @@ def summary(records: list[dict], names: Mapping[str, str] | None = None) -> dict
         "p50": counters["p50"],
         "p95": p95,
         "filterGaps": gaps,
-        "criteria": _criteria(commands, agreement, wrong, p95),
+        "criteria": compare.criteria(counters),
         "recent": recent,
         "waiting": [],
     }

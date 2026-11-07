@@ -24,6 +24,7 @@ from voice_router.compare import (
     PROMOTION_AGREEMENT,
     PROMOTION_N,
     PROMOTION_P95,
+    criteria,
     summary,
 )
 from voice_router.house import House
@@ -55,31 +56,29 @@ async def _replay(data: Path, key: str, model: str, limit: float, explain: bool)
 def _compare(path: Path) -> int:
     """Read the log and print the report of the local route.
 
-    The four criteria come from the counters of the summary, so the report and
-    the promotion rule cannot disagree.
+    The four pass conditions come from `compare.criteria`, so the report and
+    the `/stats` route cannot disagree.
     """
     if not path.is_file():
         print(f"voice-router: {path} is not a file", file=sys.stderr)
         return 2
     result = summary(Store(path).all_records())
-    criteria = (
-        (f"commands {PROMOTION_N} or more", result["n"] >= PROMOTION_N),
+    passed = {row["key"]: row["pass"] for row in criteria(result)}
+    lines = (
+        (f"commands {PROMOTION_N} or more", passed["commands"]),
         (
             f"agreement {PROMOTION_AGREEMENT * 100:.0f}% or more",
-            result["agreement"] >= PROMOTION_AGREEMENT,
+            passed["agreement"],
         ),
-        ("no wrong device", result["wrong"] == 0),
-        (
-            f"p95 under {PROMOTION_P95}s",
-            result["n"] > 0 and result["p95"] < PROMOTION_P95,
-        ),
+        ("no wrong device", passed["wrong"]),
+        (f"p95 under {PROMOTION_P95}s", passed["p95"]),
     )
     print(f"n {result['n']}")
     print(f"agreement {result['agreement'] * 100:.1f}%")
     print(f"wrong {result['wrong']}")
     print(f"p50 {result['p50']:.2f}s p95 {result['p95']:.2f}s")
-    for name, passed in criteria:
-        print(f"{name}: {'pass' if passed else 'fail'}")
+    for name, ok in lines:
+        print(f"{name}: {'pass' if ok else 'fail'}")
     print(f"promotion: {'pass' if result['promotion'] else 'fail'}")
     return 0
 

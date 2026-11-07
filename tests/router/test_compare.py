@@ -2,8 +2,13 @@
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from voice_router.api import create_app
 from voice_router.cli import main
-from voice_router.compare import summary
+from voice_router.compare import considered, summary
+from voice_router.jev import Jev
+from voice_router.settings import Settings
 from voice_router.store import Store
 
 
@@ -97,6 +102,57 @@ def test_the_promotion_criteria_pass():
     assert result["p50"] == 0.1
     assert result["p95"] == 0.1
     assert result["promotion"] is True
+
+
+def test_considered_keeps_the_device_commands_with_a_local_answer():
+    records = [
+        _record({"choice": "light.office_lamp", "seconds": 0.1}),
+        _record({"error": "down"}),
+        _record({"choice": "light.office_lamp", "seconds": 0.1}, route="chat"),
+        {"decision": {}},
+    ]
+
+    assert considered(records) == [records[0]]
+
+
+def test_the_compare_command_and_the_stats_route_agree_on_the_criteria(
+    tmp_path: Path, capsys
+):
+    db = tmp_path / "router.db"
+    store = Store(db)
+    store.add_record(
+        {
+            "request": {"text": "turn on the desk lamp"},
+            "decision": {
+                "route": "device_command",
+                "act": True,
+                "entity_ids": ["light.office_lamp"],
+                "options": ["light.office_lamp"],
+                "local": {"choice": "light.office_lamp", "seconds": 0.1},
+                "jev": {"device": {"choice": "light.office_lamp"}},
+            },
+            "result": {"status": "done"},
+        }
+    )
+
+    assert main(["compare", "--db", str(db)]) == 0
+    out = capsys.readouterr().out
+    prefixes = ("commands ", "agreement ", "no wrong device:", "p95 under ")
+    lines = [
+        line
+        for line in out.splitlines()
+        if line.startswith(prefixes) and line.endswith((": pass", ": fail"))
+    ]
+    cli_pass = [line.endswith(": pass") for line in lines]
+
+    settings = Settings(token="test-token", openrouter_key="test-key", db=db)
+    app = create_app(settings, Jev("test-key"), store)
+    headers = {"Authorization": "Bearer test-token"}
+    body = TestClient(app).get("/stats", headers=headers).json()
+    stats_pass = [row["pass"] for row in body["criteria"]]
+
+    assert len(cli_pass) == 4
+    assert cli_pass == stats_pass
 
 
 def test_the_compare_command_prints_the_criteria(tmp_path: Path, capsys):

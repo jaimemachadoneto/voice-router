@@ -108,6 +108,9 @@ current directory, so it works on a developer machine.
 `GET /health` needs no token. It answers `{"status": "ok", "synced": false}`
 when no sync exists.
 
+`GET /stats` needs the token. It returns the dashboard summary from the log.
+It is read-only.
+
 Build the container image and start it with test settings:
 
 ```sh

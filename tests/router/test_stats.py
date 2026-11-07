@@ -143,21 +143,23 @@ def test_a_repeat_and_a_correction_read_as_a_correction():
     assert outcomes == {"r1": "correction", "r2": "correction"}
 
 
-def test_a_pending_result_that_is_done_reads_as_confirmed():
+def test_a_pending_result_reads_as_confirmed_or_waiting():
     records = [
         _record("r1", result={"pending": True, "status": "done"}),
         _record("r2", result={"pending": True}),
         _record("r3", result={"status": "done"}),
         _record("r4", act=False),
+        _record("r5", result={"pending": True, "status": "cancelled"}),
     ]
 
     outcomes = {row["id"]: row["outcome"] for row in summary(records)["recent"]}
 
     assert outcomes == {
         "r1": "confirmed",
-        "r2": "done",
+        "r2": "waiting",
         "r3": "done",
         "r4": "no offer",
+        "r5": "waiting",
     }
 
 
