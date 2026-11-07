@@ -1,8 +1,9 @@
-"""The HTTP API of the router service: the sync, the route, the log and health.
+"""The HTTP API of the router service: the sync, the route, the log, the stats and health.
 
 The Home Assistant component sends the house in one sync at start. Each spoken
 command then goes to `/route`, and the component sends the result of the action
-to `/log`. Every route except `/health` needs the bearer token of the settings.
+to `/log`. The dashboard reads `/stats`. Every route except `/health` needs the
+bearer token of the settings.
 
 The service never runs an action. It names the devices, and Home Assistant
 executes.
@@ -24,6 +25,7 @@ from voice_router.house import House
 from voice_router.jev import Jev
 from voice_router.local import ask_local, build_local
 from voice_router.settings import Settings
+from voice_router.stats import summary as stats_summary
 from voice_router.store import Store
 
 # The most time that `/route` waits for the Kev answer. A later answer goes to
@@ -210,6 +212,11 @@ def create_app(
         if not store.merge_result(body.record_id, body.result):
             raise HTTPException(status_code=404, detail="unknown record")
         return Response(status_code=204)
+
+    @app.get("/stats")
+    def get_stats(_: None = Depends(check_token)) -> dict[str, Any]:
+        """Return the dashboard summary of the whole log."""
+        return stats_summary(store.all_records())
 
     @app.get("/health")
     def health() -> dict[str, Any]:

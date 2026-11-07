@@ -227,6 +227,63 @@ def test_health_needs_no_token(settings: Settings):
     assert response.json() == {"status": "ok", "synced": False}
 
 
+def test_stats_returns_the_summary_of_the_log(settings: Settings):
+    store = Store(settings.db)
+    store.add_record(
+        {
+            "request": {
+                "text": "turn off the fan",
+                "room": "Office",
+                "language": "en",
+            },
+            "decision": {
+                "route": "device_command",
+                "act": True,
+                "entity_ids": ["fan.office"],
+                "options": ["fan.office", "fan.bedroom"],
+                "jev": {"device": {"choice": "fan.office"}},
+                "local": {"choice": "fan.office", "seconds": 0.1},
+            },
+            "result": {"status": "done"},
+        }
+    )
+    client = make_client(settings, store)
+
+    response = client.get("/stats", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["commands"] == 1
+    assert body["agreement"] == 100.0
+    assert body["waiting"] == []
+    row = body["recent"][0]
+    assert row["text"] == "turn off the fan"
+    assert row["room"] == "Office"
+    assert row["jev"] == "fan.office"
+    assert row["kev"] == "fan.office"
+    assert row["agreement"] == "agree"
+    assert row["outcome"] == "done"
+    assert row["seconds"] == 0.1
+
+
+def test_stats_on_an_empty_log_returns_no_rows(settings: Settings):
+    client = make_client(settings)
+
+    response = client.get("/stats", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["commands"] == 0
+    assert body["recent"] == []
+    assert body["waiting"] == []
+
+
+def test_stats_without_the_token_is_refused(settings: Settings):
+    client = make_client(settings)
+
+    assert client.get("/stats").status_code == 401
+
+
 def test_sync_then_route_gives_a_decision_and_a_record(settings: Settings):
     store = Store(settings.db)
     client = make_client(settings, store)
