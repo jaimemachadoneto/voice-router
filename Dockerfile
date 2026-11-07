@@ -11,6 +11,15 @@ COPY src ./src
 
 RUN python -m pip install --no-cache-dir .
 
+# The scanner refuses an image with a fixable HIGH or CRITICAL finding. These
+# three arrive with the base image and its build tools, and every newer release
+# closes a denial of service or a path traversal. Raise them after the install,
+# so the resolver cannot pull the old ones back.
+RUN python -m pip install --no-cache-dir --upgrade \
+    "setuptools>=78.1.1" \
+    "urllib3>=2.8.0" \
+    "msgpack>=1.2.3"
+
 RUN mkdir -p /data
 
 EXPOSE 8000
