@@ -33,6 +33,10 @@ jobs:
           ref: main
           token: ${{ secrets.MY_PAT }}
           path: devbase
+          # MY_PAT can also push to home-ops, and this job then runs the test
+          # code of the project. Drop the credential from .git/config once the
+          # clone is done, so project code cannot read it.
+          persist-credentials: false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
