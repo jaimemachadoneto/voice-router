@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from voice_router import proposals
 from voice_router.aliases import load_word_data, write_generated
 from voice_router.decide import DEVICE_COMMAND, decide
 from voice_router.house import House
@@ -116,6 +117,28 @@ async def _shadow(
     if "error" in answer:
         return None
     return answer
+
+
+def _record_proposal(store: Store, record_id: str, house: House | None) -> None:
+    """Keep a proposal for a command that the filter did not cover.
+
+    A proposal is a side note of the log. No proposal work may fail the log of
+    an action, so every error is ignored. The house is absent before the first
+    sync, and it gives the words.
+    """
+    if house is None:
+        return
+    try:
+        record = store.record(record_id)
+        if record is None:
+            return
+        if (record.get("decision") or {}).get("options") is not None:
+            return
+        proposals.record_proposal(store, record, house.words)
+    except Exception:  # noqa: BLE001, S110
+        # The log of the action is the important record. A broken proposal
+        # must not break it, and the service logs nothing here.
+        pass
 
 
 def app_from_env() -> FastAPI:
@@ -226,10 +249,12 @@ def create_app(
         """Join the result of the action to the record of its command.
 
         A later mark joins the result and does not replace it, so a repeat or
-        a correction keeps the status of the action.
+        a correction keeps the status of the action. A command whose filter
+        found no word gives a proposal too.
         """
         if not store.merge_result(body.record_id, body.result):
             raise HTTPException(status_code=404, detail="unknown record")
+        _record_proposal(store, body.record_id, app.state.house)
         return Response(status_code=204)
 
     @app.get("/stats")

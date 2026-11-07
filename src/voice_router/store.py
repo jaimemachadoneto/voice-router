@@ -25,7 +25,29 @@ _SCHEMA = (
         "CREATE TABLE IF NOT EXISTS records("
         "id TEXT PRIMARY KEY, at TEXT, request TEXT, decision TEXT, result TEXT)"
     ),
+    (
+        "CREATE TABLE IF NOT EXISTS proposals("
+        "id TEXT PRIMARY KEY, word TEXT, meaning TEXT, domain TEXT,"
+        " entity_id TEXT, at TEXT, status TEXT, commands TEXT)"
+    ),
 )
+
+# The most commands that one proposal keeps.
+PROPOSAL_COMMANDS = 10
+
+
+def _proposal(row: tuple) -> dict[str, Any]:
+    """One proposal row, with the commands parsed."""
+    return {
+        "id": row[0],
+        "word": row[1],
+        "meaning": row[2],
+        "domain": row[3],
+        "entity_id": row[4],
+        "at": row[5],
+        "status": row[6],
+        "commands": json.loads(row[7]) or [],
+    }
 
 
 def _migrate(db: sqlite3.Connection) -> None:
@@ -170,6 +192,20 @@ class Store:
             self._db.commit()
             return True
 
+    def set_decision(self, record_id: str, decision: dict[str, Any]) -> bool:
+        """Replace the decision of a record. False means that the id is unknown.
+
+        A proposal writes the reason into the decision of its record, so a
+        device that the service cannot place stays in the log.
+        """
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE records SET decision = ? WHERE id = ?",
+                (json.dumps(decision), record_id),
+            )
+            self._db.commit()
+            return cursor.rowcount > 0
+
     def record(self, record_id: str) -> dict[str, Any] | None:
         """The record with its JSON parsed, or None when the id is unknown."""
         with self._lock:
@@ -207,3 +243,66 @@ class Store:
             }
             for row in rows
         ]
+
+    def save_proposal(self, proposal: dict[str, Any]) -> None:
+        """Keep one proposal, with its commands as JSON."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO proposals"
+                "(id, word, meaning, domain, entity_id, at, status, commands)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    proposal["id"],
+                    proposal["word"],
+                    proposal["meaning"],
+                    proposal["domain"],
+                    proposal["entity_id"],
+                    proposal["at"],
+                    proposal["status"],
+                    json.dumps(proposal.get("commands") or []),
+                ),
+            )
+            self._db.commit()
+
+    def find_proposal(self, word: str, entity_id: str) -> dict[str, Any] | None:
+        """The proposal for one word and entity, or None when there is none."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT id, word, meaning, domain, entity_id, at, status, commands"
+                " FROM proposals WHERE word = ? AND entity_id = ?"
+                " ORDER BY rowid LIMIT 1",
+                (word, entity_id),
+            ).fetchone()
+        return _proposal(row) if row else None
+
+    def add_proposal_command(self, proposal_id: str, text: str) -> bool:
+        """Join a command to a proposal, once and up to the limit.
+
+        False means that the id is unknown. A command that the proposal
+        already holds changes nothing, and so does a full list.
+        """
+        with self._lock:
+            row = self._db.execute(
+                "SELECT commands FROM proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            commands = json.loads(row[0]) or []
+            if text not in commands and len(commands) < PROPOSAL_COMMANDS:
+                commands.append(text)
+                self._db.execute(
+                    "UPDATE proposals SET commands = ? WHERE id = ?",
+                    (json.dumps(commands), proposal_id),
+                )
+                self._db.commit()
+            return True
+
+    def list_proposals(self, status: str = "proposed") -> list[dict[str, Any]]:
+        """The proposals with one status, oldest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, word, meaning, domain, entity_id, at, status, commands"
+                " FROM proposals WHERE status = ? ORDER BY rowid",
+                (status,),
+            ).fetchall()
+        return [_proposal(row) for row in rows]
