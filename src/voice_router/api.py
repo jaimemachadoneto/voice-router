@@ -23,7 +23,7 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from voice_router import proposals
+from voice_router import notifications, proposals
 from voice_router.aliases import (
     add_shadow_word,
     load_word_data,
@@ -353,6 +353,15 @@ def create_app(
             with DECISION_LOCK:
                 reload_house()
         return Response(status_code=204)
+
+    @app.get("/notifications")
+    def get_notifications(_: None = Depends(check_token)) -> dict[str, Any]:
+        """Return the items that are due now, and record their keys.
+
+        The router records the key of each item, so a second poll or a restart
+        in the same day returns no repeated item.
+        """
+        return {"items": notifications.due(store, datetime.now(UTC))}
 
     @app.get("/proposals")
     def get_proposals(_: None = Depends(check_token)) -> dict[str, Any]:
