@@ -27,13 +27,24 @@ jobs:
       NAME: ${{ github.event.repository.name }}
       STACKS: python
     steps:
+      # Fail closed. The job runs the code of the project, so it must never
+      # hold a token that can write anywhere. MY_PAT can push to home-ops and
+      # stays in release.yaml, where no project code runs.
+      - name: The read-only devbase token must be set
+        env:
+          HAS_TOKEN: ${{ secrets.DEVBASE_TOKEN != '' }}
+        run: |
+          set -eu
+          [ "$HAS_TOKEN" = true ] || {
+            echo "::error::set DEVBASE_TOKEN: a fine-grained token with Contents read on jaimemachadoneto/devbase"
+            exit 1
+          }
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: jaimemachadoneto/devbase
           ref: main
-          # A token that can only read devbase, when it is set. MY_PAT can also
-          # push to home-ops, and this job then runs the code of the project.
-          token: ${{ secrets.DEVBASE_TOKEN || secrets.MY_PAT }}
+          token: ${{ secrets.DEVBASE_TOKEN }}
           path: devbase
           # Drop the credential from .git/config once the clone is done, so
           # project code cannot read it.
