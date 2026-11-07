@@ -1,8 +1,14 @@
 # `deploy patch` pushes the vX.Y.Z tag that starts this workflow. It publishes
 # the image and opens the PR in home-ops that sets its tag.
 #
-# The project needs the MY_PAT secret: a token that can push a branch to
-# home-ops and open a PR there.
+# This file held a call to the shared workflow in devbase until 2026-11-07.
+# GitHub cannot run that call: devbase is a personal private repository, and a
+# personal repository may share a workflow only with an organization, never
+# with another user repository. The access level answers 422. The body is
+# copied from devbase `.github/workflows/image.yaml`.
+#
+# It needs the MY_PAT secret: a token that can push a branch to home-ops and
+# open a PR there.
 name: release
 
 on:
@@ -13,12 +19,137 @@ permissions:
   contents: read
   packages: write
 
+env:
+  IMAGE: ghcr.io/jaimemachadoneto/voice-router
+  GITOPS_REPO: jaimemachadoneto/home-ops
+  GITOPS_FILE: kubernetes/apps/selfhosted/voice-router/app/helmrelease.yaml
+
 jobs:
-  release:
-    uses: jaimemachadoneto/devbase/.github/workflows/image.yaml@main
-    with:
-      image: "ghcr.io/jaimemachadoneto/voice-router"
-      release: true
-      gitops-file: "kubernetes/apps/selfhosted/voice-router/app/helmrelease.yaml"
-    secrets:
-      gitops-token: ${{ secrets.MY_PAT }}
+  image:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: A release needs a version tag and a GitOps target
+        env:
+          HAS_TOKEN: ${{ secrets.MY_PAT != '' }}
+        run: |
+          set -eu
+          case "$GITHUB_REF" in refs/tags/v[0-9]*) ;; *)
+            echo "::error::a release needs a vX.Y.Z tag, not $GITHUB_REF"; exit 1 ;;
+          esac
+          [ -n "$GITOPS_FILE" ] || { echo "::error::the workflow needs GITOPS_FILE"; exit 1; }
+          [ "$HAS_TOKEN" = true ] || { echo "::error::the release needs the MY_PAT secret"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,format=long
+
+      # One platform, loaded into the local daemon, so Trivy examines the image
+      # before anything is published.
+      - name: Build for the scan
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: "."
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: local/ci:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: local/ci:scan
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Registry
+        id: registry
+        env:
+          IMAGE: ${{ env.IMAGE }}
+        run: echo "host=${IMAGE%%/*}" >>"$GITHUB_OUTPUT"
+
+      - name: Log in to the registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ steps.registry.outputs.host }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: "."
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+
+  gitops:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: sha-${{ github.sha }}
+      VERSION: ${{ needs.image.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.MY_PAT }}
+          path: gitops
+
+      # yq and patch are on the runner image. Every mapping whose `repository`
+      # is this image gets the new tag, whatever the controller is called. yq
+      # drops blank lines when it writes, so only its non-blank changes go back
+      # into the file: the PR shows one changed line.
+      - name: Set the image tag
+        working-directory: gitops
+        run: |
+          set -eu
+          [ -f "$GITOPS_FILE" ] || { echo "::error::$GITOPS_FILE is not in the GitOps repository"; exit 1; }
+          yq '(.. | select(tag == "!!map" and has("repository") and .repository == env(IMAGE))).tag = env(TAG)' "$GITOPS_FILE" >"$RUNNER_TEMP/new.yaml"
+          diff -U0 -B "$GITOPS_FILE" "$RUNNER_TEMP/new.yaml" >"$RUNNER_TEMP/tag.patch" || true
+          if [ -s "$RUNNER_TEMP/tag.patch" ]; then
+            patch -s "$GITOPS_FILE" "$RUNNER_TEMP/tag.patch"
+          elif ! grep -q "tag: $TAG" "$GITOPS_FILE"; then
+            echo "::error::no image with repository $IMAGE in $GITOPS_FILE"
+            exit 1
+          fi
+          git --no-pager diff
+
+      - name: Open the deploy PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          path: gitops
+          token: ${{ secrets.MY_PAT }}
+          branch: deploy/${{ github.event.repository.name }}-${{ needs.image.outputs.version }}
+          delete-branch: true
+          commit-message: deploy ${{ github.event.repository.name }} ${{ needs.image.outputs.version }} (${{ env.TAG }})
+          title: deploy ${{ github.event.repository.name }} ${{ needs.image.outputs.version }} (${{ env.TAG }})
+          body: |
+            Set `${{ env.IMAGE }}` to `${{ env.TAG }}` in `${{ env.GITOPS_FILE }}`.
+
+            - Source: ${{ github.server_url }}/${{ github.repository }}/tree/v${{ needs.image.outputs.version }}
+            - Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Flux applies it after the merge.

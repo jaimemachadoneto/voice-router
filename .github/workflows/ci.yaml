@@ -1,5 +1,15 @@
-# The shared devbase workflow runs the tests of the project and builds the
-# image on each pull request and each push to main.
+# The test suite of the project, and a build of the image on each pull request
+# and each push to main.
+#
+# This file held a call to the shared workflow in devbase until 2026-11-07.
+# GitHub cannot run that call: devbase is a personal private repository, and a
+# personal repository may share a workflow only with an organization, never
+# with another user repository. The access level answers 422. The body is
+# copied from devbase `.github/workflows/project-ci.yaml` and `image.yaml`, and
+# it reads devbase with a token, which is allowed.
+#
+# A linked project carries no devenv.base.nix in git, so this workflow checks
+# out devbase, puts the project under devbase/repos/ and runs `base link`.
 name: ci
 
 on:
@@ -12,11 +22,70 @@ permissions:
 
 jobs:
   test:
-    uses: jaimemachadoneto/devbase/.github/workflows/project-ci.yaml@main
-    with:
-      stacks: "python"
+    runs-on: ubuntu-latest
+    env:
+      NAME: ${{ github.event.repository.name }}
+      STACKS: python
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: jaimemachadoneto/devbase
+          ref: main
+          token: ${{ secrets.MY_PAT }}
+          path: devbase
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: devbase/repos/${{ github.event.repository.name }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+
+      - name: Wire the project to the shared stacks
+        working-directory: devbase
+        run: |
+          set -eu
+          if [ -d "repos/$NAME/devenv" ]; then
+            echo "vendored: the project carries its own devenv/ copies"
+          else
+            BASE_NO_SYNC=1 bin/base link "$NAME" --lang "$STACKS"
+          fi
+
+      - name: check
+        working-directory: devbase/repos/${{ github.event.repository.name }}
+        run: devenv test
+
+      - name: lint
+        working-directory: devbase/repos/${{ github.event.repository.name }}
+        run: devenv shell -- lint
 
   image:
-    uses: jaimemachadoneto/devbase/.github/workflows/image.yaml@main
-    with:
-      image: "ghcr.io/jaimemachadoneto/voice-router"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # One platform, loaded into the local daemon, so Trivy examines the image
+      # before anything is published.
+      - name: Build for the scan
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: "."
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: local/ci:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: local/ci:scan
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
