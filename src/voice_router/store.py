@@ -90,6 +90,27 @@ class Store:
             self._db.commit()
             return cursor.rowcount > 0
 
+    def set_local(self, record_id: str, local: dict[str, Any]) -> bool:
+        """Keep the Kev answer in the decision of a record.
+
+        The answer joins the decision, so one row holds both answers. False
+        means that the id is unknown.
+        """
+        with self._lock:
+            row = self._db.execute(
+                "SELECT decision FROM records WHERE id = ?", (record_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            decision = json.loads(row[0]) or {}
+            decision["local"] = local
+            self._db.execute(
+                "UPDATE records SET decision = ? WHERE id = ?",
+                (json.dumps(decision), record_id),
+            )
+            self._db.commit()
+            return True
+
     def record(self, record_id: str) -> dict[str, Any] | None:
         """The record with its JSON parsed, or None when the id is unknown."""
         with self._lock:

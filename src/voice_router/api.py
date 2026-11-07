@@ -10,6 +10,7 @@ executes.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from dataclasses import asdict
 from typing import Any
@@ -18,11 +19,16 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from voice_router.aliases import load_word_data
-from voice_router.decide import decide
+from voice_router.decide import DEVICE_COMMAND, decide
 from voice_router.house import House
 from voice_router.jev import Jev
+from voice_router.local import ask_local, build_local
 from voice_router.settings import Settings
 from voice_router.store import Store
+
+# The most time that `/route` waits for the Kev answer. A later answer goes to
+# the log alone, so a slow or down server changes no reply.
+SHADOW_GRACE = 0.05
 
 
 class SyncEntity(BaseModel):
@@ -61,19 +67,59 @@ class LogBody(BaseModel):
     result: dict[str, Any]
 
 
+def _store_late_answer(store: Store, record_id: str, task: asyncio.Task) -> None:
+    """Keep a Kev answer that arrives after the reply, and change no reply."""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        # ask_local never raises. A broken task must not stop the event loop.
+        store.set_local(record_id, {"error": str(error)})
+        return
+    store.set_local(record_id, task.result())
+
+
+async def _shadow(
+    route: str, task: asyncio.Task | None, record_id: str, store: Store
+) -> dict[str, Any] | None:
+    """Wait the grace for the Kev answer, and keep it in the log.
+
+    The reply holds the answer only when it arrives within the grace and is a
+    real answer. A late answer or an error goes to the record alone, so a slow
+    or down Kev server changes no reply.
+    """
+    if route != DEVICE_COMMAND or task is None:
+        return None
+    try:
+        answer = await asyncio.wait_for(asyncio.shield(task), timeout=SHADOW_GRACE)
+    except TimeoutError:
+        task.add_done_callback(lambda done: _store_late_answer(store, record_id, done))
+        return None
+    store.set_local(record_id, answer)
+    if "error" in answer:
+        return None
+    return answer
+
+
 def app_from_env() -> FastAPI:
     """Build the app from the process environment, for the container image.
 
     Uvicorn calls this function with `--factory`. The settings give the token,
-    the key, the database path, the house words and the Jev model.
+    the key, the database path, the house words, the Jev model and the Kev
+    server. No Kev URL turns the local route off.
     """
     settings = Settings.from_env()
     jev = Jev(settings.openrouter_key, model=settings.jev_model)
-    return create_app(settings, jev, Store(settings.db))
+    return create_app(settings, jev, Store(settings.db), build_local(settings))
 
 
-def create_app(settings: Settings, jev: Jev, store: Store) -> FastAPI:
-    """Build the app. A saved sync gives the house of the last run."""
+def create_app(
+    settings: Settings, jev: Jev, store: Store, local: Jev | None = None
+) -> FastAPI:
+    """Build the app. A saved sync gives the house of the last run.
+
+    `local` is the Kev client. When it is None, the app sends no Kev call.
+    """
 
     app = FastAPI(title="voice-router")
     words = load_word_data(settings.house_words)
@@ -106,6 +152,16 @@ def create_app(settings: Settings, jev: Jev, store: Store) -> FastAPI:
         house = app.state.house
         if house is None:
             raise HTTPException(status_code=503, detail="no sync")
+        f = house.filter(body.text, body.room)
+        local_task = None
+        if local is not None and f.options is not None and len(f.options) >= 2:
+            # Kev runs beside Jev. The shadow waits a short grace only, so a
+            # slow or down Kev server changes no reply.
+            local_task = asyncio.create_task(
+                ask_local(
+                    local, house, f.options, body.text, body.room, settings.kev_limit
+                )
+            )
         decision = await decide(body.text, body.room, house, jev, settings.jev_limit)
         decision_dict = asdict(decision)
         decision_dict["alias_version"] = house.words.version
@@ -113,6 +169,9 @@ def create_app(settings: Settings, jev: Jev, store: Store) -> FastAPI:
         record_id = store.add_record(
             {"request": body.model_dump(), "decision": decision_dict}
         )
+        answer = await _shadow(decision.route, local_task, record_id, store)
+        if answer is not None:
+            decision_dict["local"] = answer
         return {**decision_dict, "record_id": record_id}
 
     @app.post("/log", status_code=204)

@@ -4,7 +4,10 @@ The tests use an invented house, a fake Jev and a SQLite file in `tmp_path`, so
 they never send text to a third party and never touch a real registry.
 """
 
+import asyncio
+import time
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from voice_router.aliases import load_word_data
 from voice_router.api import app_from_env, create_app
-from voice_router.jev import Answer, Jev, Question
+from voice_router.jev import Answer, Jev, JevError, Question
 from voice_router.settings import Settings
 from voice_router.store import Store
 
@@ -111,6 +114,47 @@ class FakeJev(Jev):
         return answers
 
 
+LIGHTS_BODY = {**ROUTE_BODY, "text": "turn off the lights"}
+
+LOCAL_ANSWER = Answer(
+    "light.office_lamp",
+    {"light.office_lamp": 0.9, "light.office_ceiling": 0.1, "none": 0.0},
+    0.9,
+    0.01,
+    10,
+    0.0,
+)
+
+
+class FakeLocal(Jev):
+    """A Kev that answers at once, answers late, or fails.
+
+    The real client is not used, so the fake sets no key and no URL.
+    """
+
+    def __init__(
+        self,
+        answer: Answer | None = None,
+        delay: float = 0.0,
+        error: Exception | None = None,
+    ):
+        self.answer = answer
+        self.delay = delay
+        self.error = error
+        self.asked: list[Question] = []
+
+    async def choices(
+        self, state: str | dict, questions: Sequence[Question]
+    ) -> dict[str, Answer]:
+        self.asked = list(questions)
+        if self.error is not None:
+            raise self.error
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        assert self.answer is not None
+        return {"device": self.answer}
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
@@ -127,9 +171,13 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     return monkeypatch
 
 
-def make_client(settings: Settings, store: Store | None = None) -> TestClient:
+def make_client(
+    settings: Settings, store: Store | None = None, local: Jev | None = None
+) -> TestClient:
     """A client for a new app, on the store of the test."""
-    return TestClient(create_app(settings, FakeJev(), store or Store(settings.db)))
+    return TestClient(
+        create_app(settings, FakeJev(), store or Store(settings.db), local)
+    )
 
 
 def test_a_call_without_the_token_is_refused(settings: Settings):
@@ -231,6 +279,72 @@ def test_log_joins_the_result_to_the_record(settings: Settings):
     stored = store.record(record_id)
     assert stored is not None
     assert stored["result"] == result
+
+
+def test_route_logs_the_local_answer(settings: Settings):
+    store = Store(settings.db)
+    client = make_client(settings, store, FakeLocal(answer=LOCAL_ANSWER))
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    response = client.post("/route", json=LIGHTS_BODY, headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["local"]["choice"] == "light.office_lamp"
+    record = store.record(body["record_id"])
+    assert record is not None
+    assert record["decision"]["local"]["choice"] == "light.office_lamp"
+
+
+def test_a_slow_local_does_not_delay_the_route(settings: Settings):
+    slow = replace(settings, kev_limit=1.0)
+    store = Store(settings.db)
+    fake = FakeLocal(answer=LOCAL_ANSWER, delay=0.5)
+    with make_client(slow, store, fake) as client:
+        client.post("/sync", json=PAYLOAD, headers=HEADERS)
+        started = time.monotonic()
+        response = client.post("/route", json=LIGHTS_BODY, headers=HEADERS)
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.25
+        body = response.json()
+        assert "local" not in body
+        time.sleep(0.6)
+        record = store.record(body["record_id"])
+        assert record is not None
+        assert record["decision"]["local"]["choice"] == "light.office_lamp"
+
+
+def test_a_local_error_is_logged(settings: Settings):
+    store = Store(settings.db)
+    client = make_client(settings, store, FakeLocal(error=JevError("down")))
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    response = client.post("/route", json=LIGHTS_BODY, headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "local" not in body
+    record = store.record(body["record_id"])
+    assert record is not None
+    assert record["decision"]["local"] == {"error": "down"}
+
+
+def test_no_local_client_sends_no_kev_call(settings: Settings):
+    store = Store(settings.db)
+    client = make_client(settings, store)
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    body = client.post("/route", json=LIGHTS_BODY, headers=HEADERS).json()
+
+    assert "local" not in body
+    record = store.record(body["record_id"])
+    assert record is not None
+    assert "local" not in record["decision"]
+
+
+def test_set_local_for_an_unknown_record_is_refused(tmp_path: Path):
+    store = Store(tmp_path / "router.db")
+    assert store.set_local("missing", {}) is False
 
 
 def test_log_for_an_unknown_record_is_404(settings: Settings):
