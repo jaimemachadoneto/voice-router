@@ -283,10 +283,12 @@ async def test_setup_syncs_and_unload_stops_the_timer(
 ) -> None:
     """The setup sends the house and the unload stops the pending sync."""
     aioclient_mock.post("http://router/sync", json={})
+    aioclient_mock.get("http://router/notifications", json={"items": []})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     state = hass.data[DOMAIN][entry.entry_id]
-    assert aioclient_mock.call_count == 1
+    sync_calls = [call for call in aioclient_mock.mock_calls if call[0] == "POST"]
+    assert len(sync_calls) == 1
 
     er.async_get(hass).async_update_entity("light.kitchen", name="Kitchen lamp")
     assert state["timer"] is not None
@@ -296,7 +298,8 @@ async def test_setup_syncs_and_unload_stops_the_timer(
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=3))
     await hass.async_block_till_done()
-    assert aioclient_mock.call_count == 1
+    sync_calls = [call for call in aioclient_mock.mock_calls if call[0] == "POST"]
+    assert len(sync_calls) == 1
 
 
 async def test_an_options_change_reloads_the_entry(
@@ -307,6 +310,7 @@ async def test_an_options_change_reloads_the_entry(
 ) -> None:
     """An options change reloads the entry, so the new values take effect."""
     aioclient_mock.post("http://router/sync", json={})
+    aioclient_mock.get("http://router/notifications", json={"items": []})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     assert entry.state is ConfigEntryState.LOADED

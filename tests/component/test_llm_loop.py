@@ -275,6 +275,7 @@ async def _setup(
 ) -> None:
     """Set up the entry with the router that gives the route."""
     aioclient_mock.post(f"{ROUTER}/sync", json={})
+    aioclient_mock.get(f"{ROUTER}/notifications", json={"items": []})
     aioclient_mock.post(LOG_URL, status=204)
 
     async def answer(method: str, url: Any, data: Any) -> AiohttpClientMockResponse:

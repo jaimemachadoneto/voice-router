@@ -138,6 +138,7 @@ async def _setup(
 ) -> None:
     """Set up the entry with the mocked router."""
     aioclient_mock.post(f"{ROUTER}/sync", json={})
+    aioclient_mock.get(f"{ROUTER}/notifications", json={"items": []})
     aioclient_mock.post(LOG_URL, status=204)
     if route is not None:
         aioclient_mock.post(ROUTE_URL, **route)
@@ -456,7 +457,9 @@ async def test_offline_says_there_is_no_internet(
 async def test_two_entries_make_two_agents(hass: HomeAssistant, aioclient_mock) -> None:
     """Two entries with different routers make two conversation agents."""
     aioclient_mock.post(f"{ROUTER}/sync", json={})
+    aioclient_mock.get(f"{ROUTER}/notifications", json={"items": []})
     aioclient_mock.post("http://router-two/sync", json={})
+    aioclient_mock.get("http://router-two/notifications", json={"items": []})
     data = {
         CONF_ROUTER_TOKEN: "t",
         CONF_LITELLM_URL: "http://llm",
