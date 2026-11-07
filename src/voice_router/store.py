@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from voice_router.words import fold
+
 _SCHEMA = (
     (
         "CREATE TABLE IF NOT EXISTS syncs("
@@ -27,7 +29,7 @@ _SCHEMA = (
     ),
     (
         "CREATE TABLE IF NOT EXISTS proposals("
-        "id TEXT PRIMARY KEY, word TEXT, meaning TEXT, domain TEXT,"
+        "id TEXT PRIMARY KEY, word TEXT, word_key TEXT, meaning TEXT, domain TEXT,"
         " entity_id TEXT, at TEXT, status TEXT, commands TEXT,"
         " before_count INTEGER, after_count INTEGER)"
     ),
@@ -69,6 +71,25 @@ def _migrate(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE proposals ADD COLUMN before_count INTEGER")
     if "after_count" not in proposal_columns:
         db.execute("ALTER TABLE proposals ADD COLUMN after_count INTEGER")
+    if "word_key" not in proposal_columns:
+        db.execute("ALTER TABLE proposals ADD COLUMN word_key TEXT")
+        rows = db.execute("SELECT id, word FROM proposals").fetchall()
+        for row in rows:
+            db.execute(
+                "UPDATE proposals SET word_key = ? WHERE id = ?",
+                (fold(row[1] or ""), row[0]),
+            )
+    # The folded word and the entity give one row, also after a race of two
+    # writers. The display spelling stays in `word`. The display pair is
+    # unique too, as the table contract says.
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS proposals_word_entity"
+        " ON proposals(word_key, entity_id)"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS proposals_word_display"
+        " ON proposals(word, entity_id)"
+    )
 
 
 class Store:
@@ -202,19 +223,27 @@ class Store:
             self._db.commit()
             return True
 
-    def set_decision(self, record_id: str, decision: dict[str, Any]) -> bool:
-        """Replace the decision of a record. False means that the id is unknown.
+    def merge_decision(self, record_id: str, patch: dict[str, Any]) -> bool:
+        """Join keys to the decision of a record under one lock.
 
-        A proposal writes the reason into the decision of its record, so a
-        device that the service cannot place stays in the log.
+        False means that the id is unknown. The merge changes only the keys of
+        the patch, so an answer that another writer added stays in the
+        decision.
         """
         with self._lock:
-            cursor = self._db.execute(
+            row = self._db.execute(
+                "SELECT decision FROM records WHERE id = ?", (record_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            decision = json.loads(row[0]) or {}
+            decision.update(patch)
+            self._db.execute(
                 "UPDATE records SET decision = ? WHERE id = ?",
                 (json.dumps(decision), record_id),
             )
             self._db.commit()
-            return cursor.rowcount > 0
+            return True
 
     def record(self, record_id: str) -> dict[str, Any] | None:
         """The record with its JSON parsed, or None when the id is unknown."""
@@ -254,62 +283,71 @@ class Store:
             for row in rows
         ]
 
-    def save_proposal(self, proposal: dict[str, Any]) -> None:
-        """Keep one proposal, with its commands as JSON and its counts."""
+    def merge_proposal(self, proposal: dict[str, Any], text: str) -> dict[str, Any]:
+        """Insert a proposal, or join a command to the row of the same word.
+
+        The lookup key is the folded word, so two spellings of one word give
+        one row. The row keeps the display spelling of the first command. The
+        find, the insert and the command join run under one lock. A UNIQUE
+        index stops a second row after a race.
+        """
+        key = fold(proposal["word"])
+        columns = (
+            "id, word, meaning, domain, entity_id, at, status, commands,"
+            " before_count, after_count"
+        )
         with self._lock:
+            row = self._db.execute(
+                f"SELECT {columns} FROM proposals"
+                " WHERE word_key = ? AND entity_id = ? ORDER BY rowid LIMIT 1",
+                (key, proposal["entity_id"]),
+            ).fetchone()
+            if row is not None:
+                commands = json.loads(row[7]) or []
+                if text not in commands and len(commands) < PROPOSAL_COMMANDS:
+                    commands.append(text)
+                    self._db.execute(
+                        "UPDATE proposals SET commands = ? WHERE id = ?",
+                        (json.dumps(commands), row[0]),
+                    )
+                    self._db.commit()
+                    row = (*row[:7], json.dumps(commands), row[8], row[9])
+                return _proposal(row)
+            commands = list(proposal.get("commands") or [text])
             self._db.execute(
                 "INSERT INTO proposals"
-                "(id, word, meaning, domain, entity_id, at, status, commands,"
-                " before_count, after_count)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, word, word_key, meaning, domain, entity_id, at, status,"
+                " commands, before_count, after_count)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     proposal["id"],
                     proposal["word"],
+                    key,
                     proposal["meaning"],
                     proposal["domain"],
                     proposal["entity_id"],
                     proposal["at"],
                     proposal["status"],
-                    json.dumps(proposal.get("commands") or []),
+                    json.dumps(commands),
                     proposal["before_count"],
                     proposal["after_count"],
                 ),
             )
             self._db.commit()
-
-    def find_proposal(self, word: str, entity_id: str) -> dict[str, Any] | None:
-        """The proposal for one word and entity, or None when there is none."""
-        with self._lock:
-            row = self._db.execute(
-                "SELECT id, word, meaning, domain, entity_id, at, status, commands,"
-                " before_count, after_count"
-                " FROM proposals WHERE word = ? AND entity_id = ?"
-                " ORDER BY rowid LIMIT 1",
-                (word, entity_id),
-            ).fetchone()
-        return _proposal(row) if row else None
-
-    def add_proposal_command(self, proposal_id: str, text: str) -> bool:
-        """Join a command to a proposal, once and up to the limit.
-
-        False means that the id is unknown. A command that the proposal
-        already holds changes nothing, and so does a full list.
-        """
-        with self._lock:
-            row = self._db.execute(
-                "SELECT commands FROM proposals WHERE id = ?", (proposal_id,)
-            ).fetchone()
-            if row is None:
-                return False
-            commands = json.loads(row[0]) or []
-            if text not in commands and len(commands) < PROPOSAL_COMMANDS:
-                commands.append(text)
-                self._db.execute(
-                    "UPDATE proposals SET commands = ? WHERE id = ?",
-                    (json.dumps(commands), proposal_id),
-                )
-                self._db.commit()
-            return True
+        return _proposal(
+            (
+                proposal["id"],
+                proposal["word"],
+                proposal["meaning"],
+                proposal["domain"],
+                proposal["entity_id"],
+                proposal["at"],
+                proposal["status"],
+                json.dumps(commands),
+                proposal["before_count"],
+                proposal["after_count"],
+            )
+        )
 
     def list_proposals(self, status: str = "proposed") -> list[dict[str, Any]]:
         """The proposals with one status, oldest first."""

@@ -92,10 +92,12 @@ class FakeJev(Jev):
         self.delay = delay
         self.error = error
         self.asked: list[str] = []
+        self.calls = 0
 
     async def choices(
         self, state: str | dict, questions: Sequence[Question]
     ) -> dict[str, Answer]:
+        self.calls += 1
         self.asked = [q.name for q in questions]
         if self.error is not None:
             raise self.error
@@ -174,6 +176,50 @@ async def test_no_options_gives_no_set(house: House):
     assert decision.act is False
     assert decision.reason == "no_set"
     assert decision.options is None
+
+
+async def test_a_missed_word_asks_the_diagnosis_question_in_the_same_call(
+    house: House,
+):
+    jev = FakeJev(action="turn_on", device="light.office_lamp")
+
+    await decide("liga o abajur", "Office", house, jev)
+
+    assert jev.calls == 1
+    assert jev.asked == ["route", "action", "device"]
+
+
+async def test_the_diagnosis_answer_makes_a_proposal_and_does_not_act(house: House):
+    jev = FakeJev(action="turn_on", device="light.office_lamp")
+
+    decision = await decide("liga o abajur", "Office", house, jev)
+
+    assert decision.act is False
+    assert decision.reason == "no_set"
+    assert decision.entity_ids == []
+    assert decision.proposal == {
+        "device": "light.office_lamp",
+        "options": ["fan.office", "light.office_ceiling", "light.office_lamp"],
+    }
+
+
+async def test_a_none_diagnosis_answer_makes_no_proposal(house: House):
+    jev = FakeJev(action="turn_on", device="none")
+
+    decision = await decide("liga o abajur", "Office", house, jev)
+
+    assert decision.act is False
+    assert decision.reason == "no_set"
+    assert decision.proposal is None
+
+
+async def test_a_text_with_no_action_word_sends_no_diagnosis_question(house: House):
+    jev = FakeJev()
+
+    decision = await decide("hello house", None, house, jev)
+
+    assert jev.asked == ["route", "action"]
+    assert decision.proposal is None
 
 
 async def test_an_empty_set_gives_empty_set(house: House):

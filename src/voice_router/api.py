@@ -132,7 +132,9 @@ def _record_proposal(store: Store, record_id: str, house: House | None) -> None:
         record = store.record(record_id)
         if record is None:
             return
-        if (record.get("decision") or {}).get("options") is not None:
+        decision = record.get("decision") or {}
+        proposal = decision.get("proposal")
+        if not isinstance(proposal, dict) or not proposal.get("device"):
             return
         proposals.record_proposal(store, house, record)
     except Exception:  # noqa: BLE001, S110
@@ -234,6 +236,9 @@ def create_app(
         if decision_dict["local"] is None:
             # A phase 1 record holds no local key. The shadow adds it.
             del decision_dict["local"]
+        if decision_dict["proposal"] is None:
+            # Only a diagnosis answer gives a proposal.
+            del decision_dict["proposal"]
         decision_dict["alias_version"] = house.words.version
         decision_dict["registry_hash"] = house.registry_hash
         record_id = store.add_record(

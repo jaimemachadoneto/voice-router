@@ -93,13 +93,16 @@ ENV_NAMES = (
 class FakeJev(Jev):
     """A Jev that answers a device command and the action to turn off."""
 
-    def __init__(self):
+    def __init__(self, device: str = "none"):
         # The real client is not used, so the fake sets no key and no URL.
+        self.device = device
         self.asked: list[str] = []
+        self.calls = 0
 
     async def choices(
         self, state: str | dict, questions: Sequence[Question]
     ) -> dict[str, Answer]:
+        self.calls += 1
         self.asked = [q.name for q in questions]
         answers = {
             "route": Answer(
@@ -110,7 +113,9 @@ class FakeJev(Jev):
         if "device" in self.asked:
             # A call with two or more options asks this question; the tests
             # have one option, so the fake still answers it for a later test.
-            answers["device"] = Answer("none", {"none": 1.0}, 0.8, 0.01, 10, 0.0)
+            answers["device"] = Answer(
+                self.device, {self.device: 1.0}, 0.8, 0.01, 10, 0.0
+            )
         return answers
 
 

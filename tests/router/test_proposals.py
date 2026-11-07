@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.router.test_api import FakeJev as ApiFakeJev
 from voice_router import proposals
 from voice_router.aliases import WordData, load_word_data
 from voice_router.api import create_app
@@ -21,7 +22,7 @@ from voice_router.house import House
 from voice_router.jev import Answer, Jev, Question
 from voice_router.settings import Settings
 from voice_router.store import Store
-from voice_router.words import NONE
+from voice_router.words import NONE, fold
 
 TOKEN = "test-token"
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
@@ -154,6 +155,8 @@ def add_record(
         if device is not None
         else {"error": "down"},
     }
+    if device is not None:
+        decision["proposal"] = {"device": device}
     record_id = store.add_record(
         {
             "request": {"text": text, "language": language, "room": None},
@@ -269,31 +272,31 @@ def test_candidate_returns_none_when_the_filter_found_a_word(words: WordData):
         "request": {"text": "liga o abajur"},
         "decision": {
             "options": ["light.sala"],
-            "jev": {"device": {"choice": "light.sala"}},
+            "proposal": {"device": "light.sala"},
         },
     }
 
     assert proposals.candidate(record, words) is None
 
 
-def test_candidate_returns_none_when_jev_names_no_device(words: WordData):
+def test_candidate_returns_none_when_the_proposal_names_no_device(words: WordData):
     none_device = {
         "request": {"text": "liga o abajur"},
-        "decision": {"options": None, "jev": {"device": {"choice": NONE}}},
+        "decision": {"options": None, "proposal": {"device": NONE}},
     }
-    no_device = {
+    no_proposal = {
         "request": {"text": "liga o abajur"},
-        "decision": {"options": None, "jev": {"error": "down"}},
+        "decision": {"options": None},
     }
 
     assert proposals.candidate(none_device, words) is None
-    assert proposals.candidate(no_device, words) is None
+    assert proposals.candidate(no_proposal, words) is None
 
 
 def test_candidate_takes_the_longest_missed_word(words: WordData):
     record = {
         "request": {"text": "liga o abajur do teto"},
-        "decision": {"options": None, "jev": {"device": {"choice": "light.sala"}}},
+        "decision": {"options": None, "proposal": {"device": "light.sala"}},
     }
 
     found = proposals.candidate(record, words)
@@ -304,7 +307,7 @@ def test_candidate_takes_the_longest_missed_word(words: WordData):
 def test_candidate_keeps_the_earliest_of_two_equal_words(words: WordData):
     record = {
         "request": {"text": "liga o teto e a mesa"},
-        "decision": {"options": None, "jev": {"device": {"choice": "light.sala"}}},
+        "decision": {"options": None, "proposal": {"device": "light.sala"}},
     }
 
     found = proposals.candidate(record, words)
@@ -388,11 +391,11 @@ def test_an_old_database_gains_the_change_columns(tmp_path: Path):
 
 
 def test_meaning_for_a_known_domain(words: WordData):
-    assert proposals.meaning_for("light", words, "en") == "a light"
+    assert proposals.meaning_for("light", words) == "a light"
 
 
 def test_meaning_for_returns_none_for_a_domain_with_no_word(words: WordData):
-    assert proposals.meaning_for("lock", words, "pt") is None
+    assert proposals.meaning_for("lock", words) is None
 
 
 def test_log_records_a_proposal(settings: Settings, store: Store):
@@ -473,3 +476,100 @@ def test_a_proposal_row_keeps_its_commands_as_json(tmp_path: Path, words: WordDa
     with sqlite3.connect(path) as db:
         row = db.execute("SELECT commands FROM proposals").fetchone()
     assert json.loads(row[0]) == ["liga o abajur"]
+
+
+def test_two_spellings_of_one_word_make_one_proposal(store: Store, house: House):
+    proposals.record_proposal(store, house, add_record(store, "liga o Abajur"))
+    proposals.record_proposal(store, house, add_record(store, "liga o abajur"))
+
+    stored = proposals.list_proposals(store)
+
+    assert len(stored) == 1
+    assert stored[0]["word"] == "Abajur"
+    assert fold(stored[0]["word"]) == "abajur"
+    assert stored[0]["commands"] == ["liga o Abajur", "liga o abajur"]
+
+
+def test_a_legacy_row_with_no_counts_does_not_render_none(tmp_path: Path):
+    path = tmp_path / "legacy.db"
+    store = Store(path)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO proposals"
+            "(id, word, meaning, domain, entity_id, at, status, commands,"
+            " before_count, after_count)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "legacy",
+                "abajur",
+                "a light",
+                "light",
+                "light.sala",
+                "2026-01-01",
+                "proposed",
+                "[]",
+                None,
+                None,
+            ),
+        )
+        db.commit()
+
+    stored = proposals.list_proposals(store)
+
+    assert len(stored) == 1
+    assert stored[0]["change"] == "the change is not measured"
+    assert "None" not in stored[0]["change"]
+
+
+def test_a_stale_entity_makes_no_proposal(store: Store, house: House):
+    record = add_record(store, "liga o abajur", device="light.gone")
+
+    proposal = proposals.record_proposal(store, house, record)
+
+    assert proposal is None
+    assert proposals.list_proposals(store) == []
+    stored = store.record(record["id"])
+    assert stored is not None
+    assert stored["decision"]["proposal"] == "unplaceable"
+
+
+def test_an_unplaceable_device_keeps_a_late_local_answer(store: Store, house: House):
+    record = add_record(store, "abre a porta", device="lock.front")
+    store.set_local(record["id"], {"choice": "light.sala"})
+
+    proposal = proposals.record_proposal(store, house, record)
+
+    assert proposal is None
+    stored = store.record(record["id"])
+    assert stored is not None
+    assert stored["decision"]["local"] == {"choice": "light.sala"}
+    assert stored["decision"]["proposal"] == "unplaceable"
+
+
+def test_the_route_and_the_log_make_a_proposal(settings: Settings, store: Store):
+    client = TestClient(create_app(settings, ApiFakeJev(device="light.sala"), store))
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    routed = client.post(
+        "/route",
+        json={"text": "liga o abajur", "language": "pt"},
+        headers=HEADERS,
+    )
+
+    assert routed.status_code == 200
+    body = routed.json()
+    assert body["act"] is False
+    assert body["proposal"]["device"] == "light.sala"
+    assert proposals.list_proposals(store) == []
+
+    response = client.post(
+        "/log",
+        json={"record_id": body["record_id"], "result": {"status": "done"}},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 204
+    stored = store.list_proposals("proposed")
+    assert len(stored) == 1
+    assert stored[0]["word"] == "abajur"
+    assert stored[0]["entity_id"] == "light.sala"

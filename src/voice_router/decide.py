@@ -29,6 +29,9 @@ MAX_OFFLINE_OPTIONS = 3
 # The lowest route confidence that may act. The measured rule keeps a complex
 # request from a device action, so the router acts only at this floor or above.
 ROUTE_FLOOR = 0.9
+# The most entities of the diagnosis question. The shortlist of the decision
+# note shows these candidates, so the list stays small.
+DIAGNOSIS_LIMIT = 10
 
 
 @dataclass
@@ -40,7 +43,8 @@ class Decision:
     the router did not act, or why the local route did not act (`stale`).
     `source` tells which layer decided. `local` holds the Kev answer when the
     local route decided. `stale_since` holds the time of the sync that changed
-    the words version, when the local route is stale.
+    the words version, when the local route is stale. `proposal` holds the
+    diagnosis answer and its candidates when the filter missed a word.
     """
 
     route: str
@@ -56,19 +60,48 @@ class Decision:
     jev: dict | None
     local: dict | None = None
     stale_since: str | None = None
+    proposal: dict | None = None
 
 
-def _questions(f: FilterResult, house: House) -> list[Question]:
-    """The route and action questions, and the device question when needed."""
+def _diagnosis_options(house: House, room: str | None) -> list[str]:
+    """The entities of the diagnosis question, sorted and capped.
+
+    The question shows the devices of the satellite room when the room has
+    devices, else all devices. The entity id gives the order, so two calls
+    give the same list.
+    """
+    entities = list(house.entities.values())
+    if room is not None:
+        in_room = sorted(e.entity_id for e in entities if e.area == room)
+        if in_room:
+            return in_room[:DIAGNOSIS_LIMIT]
+    return sorted(e.entity_id for e in entities)[:DIAGNOSIS_LIMIT]
+
+
+def _questions(
+    f: FilterResult, house: House, text: str, room: str | None
+) -> list[Question]:
+    """The route and action questions, and the device question when needed.
+
+    A set of two or more devices gets the device question. When the words give
+    no set and name an action, the device question is diagnosis: it names the
+    device of a proposal, and the router never acts on the answer.
+    """
     questions = [
         Question(name="route", instructions=ROUTE_Q, criteria=ROUTE),
         Question(name="action", instructions=ACTION_Q, criteria=ACTION),
     ]
     options = f.options
     if options is not None and len(options) >= 2:
-        # The words give one device without a model, so the question would
-        # break the shape of the training data.
+        # One option would break the shape of the training data, so only a
+        # set gets the question.
         questions.append(device_question(options, house))
+    elif options is None and actions_in(text, house.words):
+        # The call returns the route too, so the question goes on every
+        # route. Only a device command with no set makes a proposal.
+        candidates = _diagnosis_options(house, room)
+        if candidates:
+            questions.append(device_question(candidates, house))
     return questions
 
 
@@ -228,7 +261,7 @@ async def _decide(
     state = {"command": text, "speaker_room": room}
     try:
         answers = await asyncio.wait_for(
-            jev.choices(state, _questions(f, house)), timeout=limit
+            jev.choices(state, _questions(f, house, text, room)), timeout=limit
         )
     except (JevError, TimeoutError) as err:
         return await _offline(
@@ -252,7 +285,16 @@ async def _decide(
 
     options = f.options
     if options is None:
-        return _no_act(f, DEVICE_COMMAND, "jev", "no_set", confidence, record)
+        decision = _no_act(f, DEVICE_COMMAND, "jev", "no_set", confidence, record)
+        device = answers.get("device")
+        if device is not None and device.choice != NONE:
+            # The diagnosis answer names the device for the proposal. The
+            # command does not act, because the words gave no set.
+            decision.proposal = {
+                "device": device.choice,
+                "options": _diagnosis_options(house, room),
+            }
+        return decision
     if not options:
         return _no_act(f, DEVICE_COMMAND, "jev", "empty_set", confidence, record)
     if not actions_in(text, house.words):

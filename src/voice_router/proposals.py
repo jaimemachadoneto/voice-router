@@ -12,11 +12,8 @@ joins the commands of the proposal and creates no row.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import UTC, datetime
-from functools import lru_cache
-from importlib.resources import files
 from uuid import uuid4
 
 from voice_router.aliases import WordData
@@ -81,6 +78,10 @@ STOP_WORDS = frozenset(
 
 _WORD = re.compile(r"\w+", re.UNICODE)
 
+# The known words of the last words version. The `/log` path reads this set
+# on each call, so one entry keeps the cost low.
+_KNOWN: dict[str, set[str]] = {}
+
 
 def _tokens(entries: list[str]) -> set[str]:
     """The folded words of a list of phrases."""
@@ -91,8 +92,12 @@ def _known(words: WordData) -> set[str]:
     """Every word that appears in a list of the word data.
 
     A word of the command that is in this set is not a candidate, because the
-    list covers it in a command of any language.
+    list covers it in a command of any language. The result stays until the
+    words version changes.
     """
+    cached = _KNOWN.get(words.version)
+    if cached is not None:
+        return cached
     known: set[str] = set()
     for mapping in (words.domains, words.areas, words.entities, words.questions):
         for entries in mapping.values():
@@ -100,53 +105,38 @@ def _known(words: WordData) -> set[str]:
     for langs in words.actions.values():
         for entries in langs.values():
             known.update(_tokens(entries))
+    _KNOWN.clear()
+    _KNOWN[words.version] = known
     return known
 
 
-@lru_cache(maxsize=1)
-def _general_words() -> frozenset[str]:
-    """The folded words of the general file, in any language.
-
-    A candidate that is a general word is less specific than a word of the
-    house, even when a list does not cover it.
-    """
-    data = json.loads(files("voice_router").joinpath("general_words.json").read_bytes())
-    known: set[str] = set()
-    for mapping in (data.get("domains", {}), data.get("questions", {})):
-        for entries in mapping.values():
-            known.update(_tokens(entries))
-    for langs in data.get("actions", {}).values():
-        for entries in langs.values():
-            known.update(_tokens(entries))
-    return frozenset(known)
-
-
 def candidate(record: dict, words: WordData) -> tuple[str, str] | None:
-    """The most specific missed word of a record, and the entity of Jev.
+    """The most specific missed word of a record, and the entity of the proposal.
 
-    The record must hold no set of options and a Jev device choice that is not
+    The record must hold no set of options and a proposal device that is not
     NONE. The candidate is a word of the command that no list covers, the stop
     words and one-letter words aside. The longest such word wins, then the
-    earliest; a word that is not general wins before a general one.
+    earliest.
     """
     decision = record.get("decision") or {}
     if decision.get("options") is not None:
         return None
-    device = (decision.get("jev") or {}).get("device") or {}
-    entity_id = device.get("choice")
+    proposal = decision.get("proposal")
+    if not isinstance(proposal, dict):
+        return None
+    entity_id = proposal.get("device")
     if not isinstance(entity_id, str) or entity_id == NONE:
         return None
     text = (record.get("request") or {}).get("text") or ""
     known = _known(words)
-    general = _general_words()
-    best: tuple[bool, int, int] | None = None
+    best: tuple[int, int] | None = None
     chosen: str | None = None
     for index, match in enumerate(_WORD.finditer(text)):
         raised = match.group()
         token = fold(raised)
         if len(token) < 2 or token in STOP_WORDS or token in known:
             continue
-        key = (token in general, -len(token), index)
+        key = (-len(token), index)
         if best is None or key < best:
             best, chosen = key, raised
     if chosen is None:
@@ -154,9 +144,7 @@ def candidate(record: dict, words: WordData) -> tuple[str, str] | None:
     return chosen, entity_id
 
 
-def meaning_for(
-    domain_of_entity: str, words: WordData, language: str | None
-) -> str | None:
+def meaning_for(domain_of_entity: str, words: WordData) -> str | None:
     """The suggested meaning of a new word, or None for a domain with no word.
 
     The sentence names the device type of the entity. The domain names of the
@@ -192,11 +180,16 @@ def change_sentence(before: int, after: int) -> str:
 
 
 def _with_change(proposal: dict) -> dict:
-    """One proposal with the change sentence of its stored counts."""
-    return {
-        **proposal,
-        "change": change_sentence(proposal["before_count"], proposal["after_count"]),
-    }
+    """One proposal with the change sentence of its stored counts.
+
+    An old row has no counts, so the sentence says that the change is not
+    measured. The text never shows "None".
+    """
+    before = proposal.get("before_count")
+    after = proposal.get("after_count")
+    if before is None or after is None:
+        return {**proposal, "change": "the change is not measured"}
+    return {**proposal, "change": change_sentence(before, after)}
 
 
 def _counts(
@@ -216,61 +209,57 @@ def _counts(
 
 
 def _unplaceable(store: Store, record: dict) -> None:
-    """Record that the service cannot place the device of this record."""
-    decision = record.get("decision")
-    if not isinstance(decision, dict):
-        return
-    decision["proposal"] = "unplaceable"
+    """Record that the service cannot place the device of this record.
+
+    The merge changes only the proposal key, so a local answer that arrives
+    between the read and the write stays in the decision.
+    """
     record_id = record.get("id")
     if isinstance(record_id, str):
-        store.set_decision(record_id, decision)
+        store.merge_decision(record_id, {"proposal": "unplaceable"})
 
 
 def record_proposal(store: Store, house: House, record: dict) -> dict | None:
     """Keep one proposal for the missed word of a record, or None.
 
     The meaning comes from the domain of the device and the words of the
-    command. A device with no domain word gives no proposal, and its record
-    notes the reason `unplaceable`. A repeat of the same word and entity joins
-    the command text to the stored proposal.
+    command. A device that the house does not hold, or a domain with no word,
+    gives no proposal, and its record notes the reason `unplaceable`. A repeat
+    of the same word and entity joins the command text to the stored proposal.
 
     The change comes from the filter of the house: the word is added to the
-    words of the entity that Jev named, and the option count is measured.
+    words of the entity that the proposal named, and the option count is
+    measured.
     """
     found = candidate(record, house.words)
     if found is None:
         return None
     word, entity_id = found
+    if entity_id not in house.entities:
+        _unplaceable(store, record)
+        return None
     domain = entity_id.split(".")[0]
     request = record.get("request") or {}
-    meaning = meaning_for(domain, house.words, request.get("language"))
+    meaning = meaning_for(domain, house.words)
     if meaning is None:
         _unplaceable(store, record)
         return None
     text = request.get("text") or ""
     full = f"{meaning}, as in '{_example(text, word)}'"
-    existing = store.find_proposal(word, entity_id)
-    if existing is not None:
-        store.add_proposal_command(existing["id"], text)
-        stored = store.find_proposal(word, entity_id)
-        return _with_change(stored) if stored is not None else None
     before, after = _counts(house, record, text, word, entity_id)
-    proposal = _with_change(
-        {
-            "id": uuid4().hex,
-            "word": word,
-            "meaning": full,
-            "domain": domain,
-            "entity_id": entity_id,
-            "at": datetime.now(UTC).isoformat(),
-            "status": "proposed",
-            "commands": [text],
-            "before_count": before,
-            "after_count": after,
-        }
-    )
-    store.save_proposal(proposal)
-    return proposal
+    proposal = {
+        "id": uuid4().hex,
+        "word": word,
+        "meaning": full,
+        "domain": domain,
+        "entity_id": entity_id,
+        "at": datetime.now(UTC).isoformat(),
+        "status": "proposed",
+        "commands": [text],
+        "before_count": before,
+        "after_count": after,
+    }
+    return _with_change(store.merge_proposal(proposal, text))
 
 
 def list_proposals(store: Store, status: str = "proposed") -> list[dict]:
