@@ -7,6 +7,8 @@ is read-only: the router names the devices and never runs an action.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from voice_router import compare
 from voice_router.compare import PROMOTION_AGREEMENT, PROMOTION_N, PROMOTION_P95
 from voice_router.words import NONE
@@ -42,8 +44,12 @@ def _outcome(decision: dict, result: dict) -> str:
     return "done"
 
 
-def _recent_row(record: dict) -> dict:
-    """One row of the recent commands for the dashboard."""
+def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
+    """One row of the recent commands for the dashboard.
+
+    `names` maps an entity id to the name that the dashboard shows. An id
+    without a name keeps the id.
+    """
     request = record.get("request") or {}
     decision = record.get("decision") or {}
     local = decision.get("local") or {}
@@ -54,8 +60,8 @@ def _recent_row(record: dict) -> dict:
         "text": request.get("text") or "",
         "room": request.get("room"),
         "language": request.get("language") or "en",
-        "jev": jev,
-        "kev": kev,
+        "jev": names.get(jev, jev),
+        "kev": names.get(kev, kev),
         "agreement": _agreement(decision, jev, kev),
         "outcome": _outcome(decision, record.get("result") or {}),
         "seconds": float(local.get("seconds") or 0.0),
@@ -92,17 +98,19 @@ def _criteria(commands: int, agreement: float, wrong: int, p95: float) -> list[d
             "key": "p95",
             "label": f"p95 under {PROMOTION_P95} s",
             "measured": f"{p95:.2f} s measured",
-            "pass": p95 < PROMOTION_P95,
+            "pass": commands > 0 and p95 < PROMOTION_P95,
         },
     ]
 
 
-def summary(records: list[dict]) -> dict:
+def summary(records: list[dict], names: Mapping[str, str] | None = None) -> dict:
     """The summary of the log for the dashboard.
 
     The counters come from the comparison of the local route with Jev. The
     recent rows are the newest commands first. No action waits in this phase.
+    `names` maps an entity id to the device name that the dashboard shows.
     """
+    names = names or {}
     counters = compare.summary(records)
     commands = counters["n"]
     agreement = counters["agreement"]
@@ -115,7 +123,9 @@ def summary(records: list[dict]) -> dict:
         and (record.get("decision") or {}).get("options") is None
     )
     considered = [record for record in records if compare._considered(record)]
-    recent = [_recent_row(record) for record in reversed(considered)][:RECENT_LIMIT]
+    recent = [_recent_row(record, names) for record in reversed(considered)][
+        :RECENT_LIMIT
+    ]
     return {
         "commands": commands,
         "agreement": round(agreement * 100, 1),

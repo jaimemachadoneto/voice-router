@@ -215,8 +215,18 @@ def create_app(
 
     @app.get("/stats")
     def get_stats(_: None = Depends(check_token)) -> dict[str, Any]:
-        """Return the dashboard summary of the whole log."""
-        return stats_summary(store.all_records())
+        """Return the dashboard summary of the whole log.
+
+        The names of the house turn the entity ids of a choice into the device
+        names that the dashboard shows.
+        """
+        house = app.state.house
+        names = (
+            {entity_id: entity.name for entity_id, entity in house.entities.items()}
+            if house is not None
+            else {}
+        )
+        return stats_summary(store.all_records(), names)
 
     @app.get("/health")
     def health() -> dict[str, Any]:

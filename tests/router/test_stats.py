@@ -113,8 +113,9 @@ def test_an_empty_log_gives_zero_counts_and_no_rows():
         0 >= PROMOTION_N,
         0.0 >= PROMOTION_AGREEMENT,
         result["wrong"] == 0,
-        0.0 < PROMOTION_P95,
+        result["commands"] > 0 and result["p95"] < PROMOTION_P95,
     ]
+    assert result["criteria"][3]["pass"] is False
 
 
 def test_a_record_without_a_local_answer_is_ignored():
@@ -221,3 +222,39 @@ def test_the_recent_rows_are_newest_first_and_at_most_twenty():
     assert len(rows) == 20
     assert rows[0]["id"] == "r21"
     assert rows[-1]["id"] == "r2"
+
+
+def test_the_recent_rows_show_the_device_names():
+    records = [
+        _record(
+            "r1",
+            local={"choice": "light.office_lamp", "seconds": 0.1},
+        )
+    ]
+
+    row = summary(records, names={"light.office_lamp": "Office Lamp"})["recent"][0]
+
+    assert row["jev"] == "Office Lamp"
+    assert row["kev"] == "Office Lamp"
+    assert row["agreement"] == "agree"
+
+
+def test_an_id_missing_from_the_names_keeps_the_id():
+    records = [_record("r1")]
+
+    row = summary(records, names={"light.office_ceiling": "Office Ceiling"})["recent"][
+        0
+    ]
+
+    assert row["jev"] == "light.office_lamp"
+    assert row["kev"] == "light.office_lamp"
+
+
+def test_a_none_choice_keeps_its_word_with_a_names_map():
+    records = [_record("r1", jev_device=None, local={"choice": "none", "seconds": 0.1})]
+
+    row = summary(records, names={"light.office_lamp": "Office Lamp"})["recent"][0]
+
+    assert row["jev"] == "none"
+    assert row["kev"] == "none"
+    assert row["agreement"] == "none"

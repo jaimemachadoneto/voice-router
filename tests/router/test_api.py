@@ -266,6 +266,32 @@ def test_stats_returns_the_summary_of_the_log(settings: Settings):
     assert row["seconds"] == 0.1
 
 
+def test_stats_shows_the_device_names_of_the_house(settings: Settings):
+    store = Store(settings.db)
+    store.add_record(
+        {
+            "request": {"text": "turn off the fan", "room": "Office"},
+            "decision": {
+                "route": "device_command",
+                "act": True,
+                "entity_ids": ["fan.office"],
+                "options": ["fan.office", "fan.bedroom"],
+                "jev": {"device": {"choice": "fan.office"}},
+                "local": {"choice": "fan.office", "seconds": 0.1},
+            },
+            "result": {"status": "done"},
+        }
+    )
+    client = make_client(settings, store)
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    body = client.get("/stats", headers=HEADERS).json()
+
+    row = body["recent"][0]
+    assert row["jev"] == "Office Fan"
+    assert row["kev"] == "Office Fan"
+
+
 def test_stats_on_an_empty_log_returns_no_rows(settings: Settings):
     client = make_client(settings)
 
