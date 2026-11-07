@@ -2,20 +2,25 @@
 
 The replay command sends the labeled sets of voice-lab through the decision
 and prints the counters. The compare command reads the log of the router and
-reports the agreement of the local route and the switch criteria. The router
-itself runs as a service; these commands measure a change before merge.
+reports the agreement of the local route and the switch criteria. The
+export-training command writes the next training data of the device question
+from the log. The router itself runs as a service; these commands measure a
+change before merge.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
 import httpx
 
+from voice_router.aliases import load_word_data
 from voice_router.compare import summary
+from voice_router.house import House
 from voice_router.jev import Jev
 from voice_router.replay import replay, report
 from voice_router.settings import (
@@ -24,6 +29,7 @@ from voice_router.settings import (
     _openrouter_key,
 )
 from voice_router.store import Store
+from voice_router.training import export
 
 
 async def _replay(data: Path, key: str, model: str, limit: float, explain: bool) -> int:
@@ -62,6 +68,30 @@ def _compare(path: Path) -> int:
     return 0
 
 
+def _export_training(path: Path, out: Path) -> int:
+    """Write the next training data of the device question from the log.
+
+    The house of the newest sync gives the text of each entity. Without a sync
+    the criteria cannot be exact, so the command stops with an error that names
+    the sync.
+    """
+    store = Store(path)
+    sync = store.last_sync()
+    if sync is None:
+        print(
+            "voice-router: the store holds no sync; sync the house first",
+            file=sys.stderr,
+        )
+        return 2
+    house = House.from_sync(sync, load_word_data(None))
+    rows = export(store.all_records(), house)
+    out.mkdir(parents=True, exist_ok=True)
+    target = out / "train.kev.jsonl"
+    target.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    print(f"{len(rows)} records written to {target}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the command of the arguments, and return the exit code."""
     parser = argparse.ArgumentParser(
@@ -95,9 +125,20 @@ def main(argv: list[str] | None = None) -> int:
     compare_parser.add_argument(
         "--db", type=Path, required=True, help="the database of the router."
     )
+    export_parser = commands.add_parser(
+        "export-training", help="Write the next training data from the log."
+    )
+    export_parser.add_argument(
+        "--db", type=Path, required=True, help="the database of the router."
+    )
+    export_parser.add_argument(
+        "--out", type=Path, required=True, help="the folder of the training data."
+    )
     args = parser.parse_args(argv)
     if args.command == "compare":
         return _compare(args.db)
+    if args.command == "export-training":
+        return _export_training(args.db, args.out)
     try:
         key = _openrouter_key()
     except RuntimeError as err:
