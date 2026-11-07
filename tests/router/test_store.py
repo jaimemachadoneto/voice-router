@@ -38,3 +38,22 @@ def test_a_result_for_an_unknown_record_is_refused(tmp_path: Path):
 def test_a_record_is_none_when_unknown(tmp_path: Path):
     store = Store(tmp_path / "router.db")
     assert store.record("missing") is None
+
+
+def test_all_records_reads_the_log(tmp_path: Path):
+    store = Store(tmp_path / "router.db")
+    first = store.add_record(
+        {"request": {"text": "one"}, "decision": {"route": "chat"}}
+    )
+    store.set_result(first, {"ok": True})
+    second = store.add_record(
+        {"request": {"text": "two"}, "decision": {"route": "device_command"}}
+    )
+    records = store.all_records()
+    assert [record["id"] for record in records] == [first, second]
+    assert records[0]["request"] == {"text": "one"}
+    assert records[0]["decision"] == {"route": "chat"}
+    assert records[0]["result"] == {"ok": True}
+    assert records[1]["request"] == {"text": "two"}
+    assert records[1]["decision"] == {"route": "device_command"}
+    assert records[1]["result"] is None

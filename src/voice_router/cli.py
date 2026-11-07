@@ -1,8 +1,9 @@
 """The command line of the router.
 
 The replay command sends the labeled sets of voice-lab through the decision
-and prints the counters. The router itself runs as a service; this command
-measures a change before merge.
+and prints the counters. The compare command reads the log of the router and
+reports the agreement of the local route and the switch criteria. The router
+itself runs as a service; these commands measure a change before merge.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import httpx
 
+from voice_router.compare import summary
 from voice_router.jev import Jev
 from voice_router.replay import replay, report
 from voice_router.settings import (
@@ -21,6 +23,7 @@ from voice_router.settings import (
     DEFAULT_JEV_MODEL,
     _openrouter_key,
 )
+from voice_router.store import Store
 
 
 async def _replay(data: Path, key: str, model: str, limit: float, explain: bool) -> int:
@@ -34,6 +37,28 @@ async def _replay(data: Path, key: str, model: str, limit: float, explain: bool)
         jev = Jev(key, model=model, client=client)
         rows = await replay(data, jev, limit)
     print(report(rows, explain=explain))
+    return 0
+
+
+def _compare(path: Path) -> int:
+    """Read the log and print the report of the local route.
+
+    The four criteria come from the counters of the summary, so the report and
+    the promotion rule cannot disagree.
+    """
+    result = summary(Store(path).all_records())
+    criteria = (
+        ("commands 100 or more", result["n"] >= 100),
+        ("agreement 97% or more", result["agreement"] >= 0.97),
+        ("no wrong device", result["wrong"] == 0),
+        ("p95 under 0.25s", result["p95"] < 0.25),
+    )
+    print(f"n {result['n']}")
+    print(f"agreement {result['agreement'] * 100:.1f}%")
+    print(f"wrong {result['wrong']}")
+    print(f"p50 {result['p50']:.2f}s p95 {result['p95']:.2f}s")
+    for name, passed in criteria:
+        print(f"{name}: {'pass' if passed else 'fail'}")
     return 0
 
 
@@ -64,7 +89,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print one line for each row that fails.",
     )
+    compare_parser = commands.add_parser(
+        "compare", help="Report the agreement of the local route."
+    )
+    compare_parser.add_argument(
+        "--db", type=Path, required=True, help="the database of the router."
+    )
     args = parser.parse_args(argv)
+    if args.command == "compare":
+        return _compare(args.db)
     try:
         key = _openrouter_key()
     except RuntimeError as err:

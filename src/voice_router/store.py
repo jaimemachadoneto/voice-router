@@ -127,3 +127,24 @@ class Store:
             "decision": json.loads(row[3]),
             "result": json.loads(row[4]),
         }
+
+    def all_records(self) -> list[dict[str, Any]]:
+        """Every record, oldest first, with its JSON parsed.
+
+        The report of the local route reads the whole log, so one query gives
+        the rows in the order that the router wrote them.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, at, request, decision, result FROM records ORDER BY rowid"
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "at": row[1],
+                "request": json.loads(row[2]),
+                "decision": json.loads(row[3]),
+                "result": json.loads(row[4]),
+            }
+            for row in rows
+        ]
