@@ -127,9 +127,14 @@ def test_a_record_without_a_local_answer_is_ignored():
 
     result = summary(records)
 
+    # The comparison ignores them: a criterion needs two answers.
     assert result["commands"] == 0
     assert result["agreement"] == 0.0
-    assert result["recent"] == []
+    # The table still shows the device commands, because the person asked them.
+    # A chat request is not a device command and stays out.
+    assert [row["id"] for row in result["recent"]] == ["r2", "r1"]
+    assert {row["agreement"] for row in result["recent"]} == {"uncompared"}
+    assert result["total"] == 2
 
 
 def test_a_repeat_and_a_correction_read_as_a_correction():
@@ -263,3 +268,31 @@ def test_a_none_choice_keeps_its_word_with_a_names_map():
     assert row["jev"] == "none"
     assert row["kev"] == "none"
     assert row["agreement"] == "none"
+
+
+def test_a_command_without_the_local_answer_still_appears():
+    # Kev is absent in production today, so every command has no local answer.
+    # The dashboard must still show what the person asked and what Jev chose.
+    records = [
+        _record("r1", has_local=False, jev_device="light.office_lamp"),
+        _record("r2"),
+    ]
+
+    result = summary(records)
+
+    assert result["total"] == 2
+    assert result["commands"] == 1, "the criteria count only the compared commands"
+    rows = {row["id"]: row for row in result["recent"]}
+    assert rows["r1"]["agreement"] == "uncompared"
+    assert rows["r1"]["kev"] == "none"
+    assert rows["r1"]["jev"] != "none"
+    assert rows["r2"]["agreement"] in ("agree", "disagree")
+
+
+def test_the_latency_of_a_command_without_a_local_answer_comes_from_jev():
+    record = _record("r1", has_local=False)
+    record["decision"]["jev"]["device"]["seconds"] = 0.21
+
+    row = summary([record])["recent"][0]
+
+    assert row["seconds"] == 0.21

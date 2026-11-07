@@ -23,6 +23,18 @@ def _jev_choice(decision: dict) -> str:
     return device.get("choice") or NONE
 
 
+def _jev_seconds(decision: dict) -> float:
+    """The time of the Jev device answer, for a command with no local answer."""
+    jev = decision.get("jev") or {}
+    device = jev.get("device") or {}
+    return float(device.get("seconds") or 0.0)
+
+
+def _compared(local: dict) -> bool:
+    """True when the local route gave an answer, so the two can be compared."""
+    return bool(local) and "error" not in local
+
+
 def _agreement(decision: dict, *, jev: str, kev: str) -> str:
     """The agreement of Kev with Jev, or none when both gave no choice."""
     if jev == NONE and kev == NONE:
@@ -68,9 +80,15 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
         "language": request.get("language") or "en",
         "jev": names.get(jev, jev),
         "kev": names.get(kev, kev),
-        "agreement": _agreement(decision, jev=jev, kev=kev),
+        # A command with no local answer cannot agree or disagree with it. The
+        # row says so instead of claiming a disagreement that never happened.
+        "agreement": _agreement(decision, jev=jev, kev=kev)
+        if _compared(local)
+        else "uncompared",
         "outcome": _outcome(decision, result=record.get("result") or {}),
-        "seconds": float(local.get("seconds") or 0.0),
+        # The time of the command that the dashboard shows: the local answer
+        # when there is one, and the Jev answer when there is not.
+        "seconds": float(local.get("seconds") or _jev_seconds(decision)),
     }
 
 
@@ -93,12 +111,19 @@ def summary(records: list[dict], names: Mapping[str, str] | None = None) -> dict
         if (record.get("decision") or {}).get("route") == "device_command"
         and (record.get("decision") or {}).get("options") is None
     )
-    considered = compare.considered(records)
-    recent = [_recent_row(record, names) for record in reversed(considered)][
-        :RECENT_LIMIT
+    # Every device command, not only the compared ones: the dashboard is the
+    # screen a person monitors, and it must show the commands that ran even
+    # when the local route is absent. The four criteria stay on the compared
+    # set, because a comparison needs two answers.
+    device = [
+        record
+        for record in records
+        if (record.get("decision") or {}).get("route") == "device_command"
     ]
+    recent = [_recent_row(record, names) for record in reversed(device)][:RECENT_LIMIT]
     return {
         "commands": commands,
+        "total": len(device),
         "agreement": round(agreement * 100, 1),
         "wrong": wrong,
         "p50": counters["p50"],
