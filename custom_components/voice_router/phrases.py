@@ -17,6 +17,29 @@ _PHRASES = {
         "es": "¿Seguro? Di sí para confirmar.",
     },
     "cancelled": {"pt": "Cancelado", "en": "Cancelled", "es": "Cancelado"},
+    "notify_repeated_title": {
+        "pt": "Palavra em falta",
+        "en": "Missing word",
+        "es": "Palabra que falta",
+    },
+    "notify_repeated_body": {
+        "pt": 'A palavra "{word}" faltou em {count} comandos. Decida no painel.',
+        "en": (
+            'The word "{word}" was missing in {count} commands. '
+            "Decide in the dashboard."
+        ),
+        "es": ('Faltó la palabra "{word}" en {count} comandos. Decida en el panel.'),
+    },
+    "notify_daily_title": {
+        "pt": "Trabalho à espera",
+        "en": "Work that waits",
+        "es": "Trabajo que espera",
+    },
+    "notify_daily_body": {
+        "pt": "{count} itens esperam no painel. Decida lá.",
+        "en": "{count} items wait in the dashboard. Decide there.",
+        "es": "{count} elementos esperan en el panel. Decida allí.",
+    },
 }
 
 _STATE_SENTENCES = {

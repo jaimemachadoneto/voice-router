@@ -17,6 +17,9 @@ DEFAULT_COMPLEX_MODEL = "voice-complex"
 DEFAULT_LLM_HASS_API = ["assist"]
 DEFAULT_ROUTER_TIMEOUT = 1.0
 
+# The time between two polls of the items that wait for a person.
+NOTIFY_MINUTES = 30
+
 # A domain acts on each entity of that domain. An entry with a colon acts only
 # on the entities of that device class. Site entities are added in the options
 # flow.

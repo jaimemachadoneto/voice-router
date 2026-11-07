@@ -101,6 +101,23 @@ class RouterClient:
             except ValueError:
                 raise RouterUnavailable("router replied with invalid JSON") from None
 
+    async def notifications(self) -> list[dict[str, Any]]:
+        """Get the items that wait for a person in the dashboard."""
+        async with self._async_response("GET", "/notifications") as response:
+            if response.status != 200:
+                raise RouterUnavailable(
+                    "The router refused the notifications with status "
+                    f"{response.status}"
+                )
+            try:
+                body = await response.json()
+            except ValueError:
+                raise RouterUnavailable("router replied with invalid JSON") from None
+            items = body.get("items") if isinstance(body, dict) else None
+            if not isinstance(items, list):
+                raise RouterUnavailable("router replied without notification items")
+            return items
+
     async def log(self, record_id: str, result: dict[str, Any]) -> None:
         """Send the result of an action. A fault becomes a warning, not an error."""
         payload = {"record_id": record_id, "result": result}

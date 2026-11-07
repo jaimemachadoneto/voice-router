@@ -13,6 +13,7 @@ from .const import (
     DEFAULT_ROUTER_TIMEOUT,
     DOMAIN,
 )
+from .notifications import async_start_notifications
 from .router_client import RouterClient
 from .sync import async_start_sync
 
@@ -32,6 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     await async_start_sync(hass, entry, client)
+    async_start_notifications(hass, entry, client)
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.CONVERSATION])
     return True
 
