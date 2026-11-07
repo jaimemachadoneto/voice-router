@@ -24,11 +24,21 @@ The service reads the process environment at start.
 | `VOICE_ROUTER_HOUSE_WORDS` | No | none | The private word file of the house. |
 | `VOICE_ROUTER_JEV_LIMIT` | No | `0.8` | The Jev time limit in seconds. |
 | `VOICE_ROUTER_JEV_MODEL` | No | `~typesafe/jev-latest` | The OpenRouter model of Jev. |
+| `VOICE_ROUTER_KEV_URL` | No | none | The URL of the Kev service. No local route when unset. |
+| `VOICE_ROUTER_KEV_MODEL` | No | `kev` | The model name of Kev. |
+| `VOICE_ROUTER_KEV_LIMIT` | No | `0.25` | The Kev time limit in seconds. |
+| `VOICE_ROUTER_LOCAL_FIRST` | No | false | The local-first switch. `1`, `true` or `yes` turns it on. |
 
 **`OPENROUTER_API_KEY` and `VOICE_ROUTER_OPENROUTER_KEY_FILE` are EXCLUSIVE.
 Set exactly one of them.** The service stops at start if it finds both, or
 neither. For a container, mount the secret as a file and set
 `VOICE_ROUTER_OPENROUTER_KEY_FILE` to its path.
+
+## The local route
+
+Kev is the local decision model. It answers the device question beside Jev.
+The service contract, the settings, the training data and the promotion
+checklist are in [KEV.md](KEV.md).
 
 ## The word data in two layers
 
