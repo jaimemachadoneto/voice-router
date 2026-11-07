@@ -175,7 +175,7 @@ def house(words: WordData) -> House:
 def settings(tmp_path: Path) -> Settings:
     return Settings(
         token=TOKEN,
-        openrouter_key="test-key",
+        jev_key="test-key",
         db=tmp_path / "router.db",
         house_words=tmp_path / "house_words.json",
     )

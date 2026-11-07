@@ -33,13 +33,16 @@ from voice_router.replay import replay, report
 from voice_router.settings import (
     DEFAULT_JEV_LIMIT,
     DEFAULT_JEV_MODEL,
-    _openrouter_key,
+    _jev_key,
+    _jev_url,
 )
 from voice_router.store import Store
 from voice_router.training import export
 
 
-async def _replay(data: Path, key: str, model: str, limit: float, explain: bool) -> int:
+async def _replay(
+    data: Path, key: str, model: str, url: str, limit: float, explain: bool
+) -> int:
     """Run the replay with one HTTP client, then print the report.
 
     The client closes with the `async with`, so the command leaves no open
@@ -47,7 +50,7 @@ async def _replay(data: Path, key: str, model: str, limit: float, explain: bool)
     it.
     """
     async with httpx.AsyncClient() as client:
-        jev = Jev(key, model=model, client=client)
+        jev = Jev(key, model=model, url=url, client=client)
         rows = await replay(data, jev, limit)
     print(report(rows, explain=explain))
     return 0
@@ -191,9 +194,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "export-training":
         return _export_training(args.db, args.out, args.house_words, args.kev_words)
     try:
-        key = _openrouter_key()
+        key = _jev_key()
     except RuntimeError as err:
         # The message of the settings names the variables and never the key.
         print(f"voice-router: {err}", file=sys.stderr)
         return 2
-    return asyncio.run(_replay(args.data, key, args.model, args.limit, args.explain))
+    return asyncio.run(
+        _replay(args.data, key, args.model, _jev_url(), args.limit, args.explain)
+    )

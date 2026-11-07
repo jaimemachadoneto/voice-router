@@ -1,8 +1,8 @@
 """An async client for the System One API: a model that picks one option.
 
-Jev (TypeSafe) answers this API through OpenRouter. The answer has the chosen
-option and a probability for each option, so the caller can ask for more
-certainty before it acts.
+Jev (TypeSafe) answers this API through OpenRouter or through a gateway with
+the same API. The answer has the chosen option and a probability for each
+option, so the caller can ask for more certainty before it acts.
 
 This client sends text to a third party. Use it only for tests that the user
 accepts. It makes one request and retries nothing, because the caller has a

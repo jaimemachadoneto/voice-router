@@ -59,7 +59,7 @@ def store(tmp_path: Path) -> Store:
 def settings(tmp_path: Path) -> Settings:
     return Settings(
         token=TOKEN,
-        openrouter_key="test-key",
+        jev_key="test-key",
         db=tmp_path / "router.db",
     )
 

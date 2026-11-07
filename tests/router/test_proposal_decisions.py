@@ -62,7 +62,7 @@ def make_settings(tmp_path: Path) -> Settings:
     """Settings that point at the store and the house file of the test."""
     return Settings(
         token=TOKEN,
-        openrouter_key="test-key",
+        jev_key="test-key",
         db=tmp_path / "router.db",
         house_words=tmp_path / "house_words.json",
     )

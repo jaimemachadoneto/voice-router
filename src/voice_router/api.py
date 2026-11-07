@@ -197,11 +197,11 @@ def app_from_env() -> FastAPI:
     """Build the app from the process environment, for the container image.
 
     Uvicorn calls this function with `--factory`. The settings give the token,
-    the key, the database path, the house words, the Jev model and the Kev
-    server. No Kev URL turns the local route off.
+    the key, the database path, the house words, the Jev model and URL, and the
+    Kev server. No Kev URL turns the local route off.
     """
     settings = Settings.from_env()
-    jev = Jev(settings.openrouter_key, model=settings.jev_model)
+    jev = Jev(settings.jev_key, model=settings.jev_model, url=settings.jev_url)
     return create_app(settings, jev, Store(settings.db), build_local(settings))
 
 

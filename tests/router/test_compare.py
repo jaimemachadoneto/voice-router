@@ -145,7 +145,7 @@ def test_the_compare_command_and_the_stats_route_agree_on_the_criteria(
     ]
     cli_pass = [line.endswith(": pass") for line in lines]
 
-    settings = Settings(token="test-token", openrouter_key="test-key", db=db)
+    settings = Settings(token="test-token", jev_key="test-key", db=db)
     app = create_app(settings, Jev("test-key"), store)
     headers = {"Authorization": "Bearer test-token"}
     body = TestClient(app).get("/stats", headers=headers).json()

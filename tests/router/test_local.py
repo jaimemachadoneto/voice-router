@@ -21,12 +21,14 @@ from voice_router.settings import Settings
 TOKEN = "test-token"
 ENV_NAMES = (
     "VOICE_ROUTER_TOKEN",
+    "VOICE_ROUTER_JEV_KEY",
     "OPENROUTER_API_KEY",
     "VOICE_ROUTER_OPENROUTER_KEY_FILE",
     "VOICE_ROUTER_DB",
     "VOICE_ROUTER_HOUSE_WORDS",
     "VOICE_ROUTER_JEV_LIMIT",
     "VOICE_ROUTER_JEV_MODEL",
+    "VOICE_ROUTER_JEV_URL",
     "VOICE_ROUTER_KEV_URL",
     "VOICE_ROUTER_KEV_MODEL",
     "VOICE_ROUTER_KEV_LIMIT",
@@ -239,7 +241,7 @@ def test_build_local_holds_the_trained_version(tmp_path: Path):
     words.write_text(json.dumps({"alias_version": "sha256:trained"}), encoding="utf-8")
     settings = Settings(
         token=TOKEN,
-        openrouter_key="test-key",
+        jev_key="test-key",
         db=tmp_path / "router.db",
         kev_url="http://kev:10203/v1/systemone",
         kev_words=words,
@@ -254,7 +256,7 @@ def test_build_local_holds_the_trained_version(tmp_path: Path):
 def test_build_local_with_no_words_record_holds_no_version(tmp_path: Path):
     settings = Settings(
         token=TOKEN,
-        openrouter_key="test-key",
+        jev_key="test-key",
         db=tmp_path / "router.db",
         kev_url="http://kev:10203/v1/systemone",
         kev_words=tmp_path / "missing.json",
@@ -281,7 +283,7 @@ def test_a_words_record_that_is_not_an_object_holds_no_version(tmp_path: Path):
     words.write_text(json.dumps(["sha256:trained"]), encoding="utf-8")
     settings = Settings(
         token=TOKEN,
-        openrouter_key="test-key",
+        jev_key="test-key",
         db=tmp_path / "router.db",
         kev_url="http://kev:10203/v1/systemone",
         kev_words=words,

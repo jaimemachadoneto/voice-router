@@ -81,12 +81,14 @@ ROUTE_BODY = {
 
 ENV_NAMES = (
     "VOICE_ROUTER_TOKEN",
+    "VOICE_ROUTER_JEV_KEY",
     "OPENROUTER_API_KEY",
     "VOICE_ROUTER_OPENROUTER_KEY_FILE",
     "VOICE_ROUTER_DB",
     "VOICE_ROUTER_HOUSE_WORDS",
     "VOICE_ROUTER_JEV_LIMIT",
     "VOICE_ROUTER_JEV_MODEL",
+    "VOICE_ROUTER_JEV_URL",
 )
 
 
@@ -164,7 +166,7 @@ class FakeLocal(Jev):
 def settings(tmp_path: Path) -> Settings:
     return Settings(
         token=TOKEN,
-        openrouter_key="test-key",
+        jev_key="test-key",
         db=tmp_path / "router.db",
     )
 
@@ -507,7 +509,7 @@ def test_the_settings_read_the_key_from_a_file(
 
     settings = Settings.from_env()
     assert settings.token == TOKEN
-    assert settings.openrouter_key == "file-key"
+    assert settings.jev_key == "file-key"
     assert settings.db == Path("/data/voice-router.db")
     assert settings.house_words is None
     assert settings.jev_limit == 0.8
@@ -534,11 +536,68 @@ def test_app_from_env_reads_the_settings(clean_env: pytest.MonkeyPatch, tmp_path
     assert db.exists()
 
 
-def test_the_settings_refuse_two_key_sources(
-    clean_env: pytest.MonkeyPatch, tmp_path: Path
+def test_the_jev_url_defaults_to_the_openrouter_one(
+    clean_env: pytest.MonkeyPatch,
 ):
     clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
-    clean_env.setenv("OPENROUTER_API_KEY", "test-key")
+    clean_env.setenv("VOICE_ROUTER_JEV_KEY", "test-key")
+
+    settings = Settings.from_env()
+
+    assert settings.jev_url == "https://openrouter.ai/api/v1/systemone"
+
+
+def test_the_jev_url_setting_is_read(clean_env: pytest.MonkeyPatch):
+    clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
+    clean_env.setenv("VOICE_ROUTER_JEV_KEY", "test-key")
+    clean_env.setenv("VOICE_ROUTER_JEV_URL", "https://litellm.example/v1/systemone")
+
+    settings = Settings.from_env()
+
+    assert settings.jev_url == "https://litellm.example/v1/systemone"
+
+
+def test_the_jev_key_wins_over_the_openrouter_key(
+    clean_env: pytest.MonkeyPatch,
+):
+    clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
+    clean_env.setenv("VOICE_ROUTER_JEV_KEY", "gateway-key")
+    clean_env.setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+    settings = Settings.from_env()
+
+    assert settings.jev_key == "gateway-key"
+
+
+@pytest.mark.parametrize("direct", ["VOICE_ROUTER_JEV_KEY", "OPENROUTER_API_KEY"])
+def test_the_settings_refuse_two_key_sources(
+    clean_env: pytest.MonkeyPatch, tmp_path: Path, direct: str
+):
+    clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
+    clean_env.setenv(direct, "test-key")
     clean_env.setenv("VOICE_ROUTER_OPENROUTER_KEY_FILE", str(tmp_path / "unused"))
     with pytest.raises(RuntimeError):
         Settings.from_env()
+
+
+def test_app_from_env_sends_jev_to_the_configured_url(
+    clean_env: pytest.MonkeyPatch, tmp_path: Path
+):
+    seen: dict = {}
+
+    def spy(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return FakeJev()
+
+    clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
+    clean_env.setenv("VOICE_ROUTER_JEV_KEY", "gateway-key")
+    clean_env.setenv("VOICE_ROUTER_JEV_URL", "https://litellm.example/v1/systemone")
+    clean_env.setenv("VOICE_ROUTER_DB", str(tmp_path / "env.db"))
+    clean_env.setattr("voice_router.api.Jev", spy)
+
+    app_from_env()
+
+    assert seen["args"] == ("gateway-key",)
+    assert seen["kwargs"]["model"] == "~typesafe/jev-latest"
+    assert seen["kwargs"]["url"] == "https://litellm.example/v1/systemone"
