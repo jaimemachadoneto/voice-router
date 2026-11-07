@@ -129,8 +129,15 @@ def _questions(
     options = f.options
     if options is not None and len(options) >= 2:
         # One option would break the shape of the training data, so only a
-        # set gets the question.
-        questions.append(device_question(options, house))
+        # set gets the question. A missed word can name a device outside the
+        # set, so the diagnosis candidates join the question. The set stays
+        # first, and no entity repeats.
+        offered = list(options)
+        if missed_word(text, house.words) is not None:
+            for entity_id in _diagnosis_options(house, room, text):
+                if entity_id not in offered:
+                    offered.append(entity_id)
+        questions.append(device_question(offered, house))
     elif options is None and actions_in(text, house.words):
         # The call returns the route too, so the question goes on every
         # route. Only a device command with no set makes a proposal.

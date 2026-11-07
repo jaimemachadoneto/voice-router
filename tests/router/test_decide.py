@@ -117,6 +117,25 @@ class FakeJev(Jev):
         return answers
 
 
+class ContractJev(FakeJev):
+    """A Jev that answers only an option that the asked question offered."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.questions: list[Question] = []
+
+    async def choices(
+        self, state: str | dict, questions: Sequence[Question]
+    ) -> dict[str, Answer]:
+        self.questions = list(questions)
+        answers = await super().choices(state, questions)
+        device = answers.get("device")
+        if device is not None:
+            asked = next(q for q in questions if q.name == "device")
+            assert device.choice in asked.criteria
+        return answers
+
+
 async def _answer(answer: dict) -> dict:
     """A finished local task with one answer."""
     return answer
@@ -297,6 +316,59 @@ async def test_a_device_outside_the_set_makes_a_proposal_and_does_not_act(house:
             "light.office_ceiling",
         ],
     }
+
+
+async def test_a_synonym_outside_the_set_is_offered_to_a_conforming_jev(
+    house: House,
+):
+    """The diagnosis candidates join the device question beside the set."""
+    jev = ContractJev(
+        device="lock.front",
+        probabilities={"lock.front": 0.9, "none": 0.1},
+    )
+
+    decision = await decide("liga as luzes do abajur", None, house, jev)
+
+    assert jev.asked == ["route", "action", "device"]
+    assert decision.act is False
+    assert decision.action is None
+    assert decision.entity_ids == []
+    assert decision.proposal == {
+        "device": "lock.front",
+        "options": [
+            "light.kitchen_ceiling",
+            "light.kitchen_table",
+            "light.office_lamp",
+            "light.office_ceiling",
+        ],
+    }
+
+
+async def test_the_device_question_keeps_the_set_first_with_no_duplicate(
+    house: House,
+):
+    """The diagnosis list goes after the set, and no entity repeats."""
+    jev = ContractJev(
+        device="light.office_lamp",
+        probabilities={
+            "light.office_lamp": 0.8,
+            "light.office_ceiling": 0.1,
+            "none": 0.05,
+        },
+    )
+
+    await decide("liga as luzes do abajur", None, house, jev)
+
+    asked = next(q for q in jev.questions if q.name == "device")
+    keys = list(asked.criteria)
+    assert keys[:4] == [
+        "light.kitchen_ceiling",
+        "light.kitchen_table",
+        "light.office_lamp",
+        "light.office_ceiling",
+    ]
+    assert keys[4:] == ["fan.office", "lock.front", "none"]
+    assert len(keys) == len(set(keys))
 
 
 async def test_a_device_outside_the_set_with_no_missed_word_makes_no_proposal(

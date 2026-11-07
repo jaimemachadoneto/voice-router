@@ -151,6 +151,41 @@ def test_a_legacy_duplicate_word_opens_as_one_row(tmp_path: Path):
     assert "proposals_word_entity" in indexes
 
 
+def test_a_reset_counts_only_the_records_that_follow_it(tmp_path: Path):
+    store = Store(tmp_path / "router.db")
+    first = store.add_record({"request": {}, "decision": {}})
+    first_record = store.record(first)
+    assert first_record is not None
+    first_at = first_record["at"]
+
+    assert store.add_word_event("abajur", "light.sala", first, first_at) == 1
+    store.reset_word_agreement("abajur", "light.sala")
+    assert store.word_agreement("abajur", "light.sala") == 0
+
+    # A second log of the old record does not join the count again.
+    assert store.add_word_event("abajur", "light.sala", first, first_at) == 0
+
+    second = store.add_record({"request": {}, "decision": {}})
+    second_record = store.record(second)
+    assert second_record is not None
+    second_at = second_record["at"]
+    assert store.add_word_event("abajur", "light.sala", second, second_at) == 1
+
+
+def test_a_word_event_holds_the_time_of_the_record_not_the_log(tmp_path: Path):
+    store = Store(tmp_path / "router.db")
+    record_id = store.add_record({"request": {}, "decision": {}})
+    stored = store.record(record_id)
+    assert stored is not None
+    record_at = stored["at"]
+
+    store.add_word_event("abajur", "light.sala", record_id, record_at)
+
+    with sqlite3.connect(tmp_path / "router.db") as db:
+        row = db.execute("SELECT record_at FROM word_events").fetchone()
+    assert row[0] == record_at
+
+
 def test_an_existing_database_gets_the_alias_version_column(tmp_path: Path):
     path = tmp_path / "router.db"
     db = sqlite3.connect(path)

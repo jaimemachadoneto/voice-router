@@ -35,13 +35,13 @@ _SCHEMA = (
         " decided_at TEXT, decided_by TEXT)"
     ),
     (
-        "CREATE TABLE IF NOT EXISTS word_progress("
-        "word_key TEXT, entity_id TEXT, agreements INTEGER NOT NULL DEFAULT 0,"
+        "CREATE TABLE IF NOT EXISTS word_resets("
+        "word_key TEXT, entity_id TEXT, reset_at TEXT,"
         " PRIMARY KEY(word_key, entity_id))"
     ),
     (
         "CREATE TABLE IF NOT EXISTS word_events("
-        "word_key TEXT, entity_id TEXT, record_id TEXT, at TEXT,"
+        "word_key TEXT, entity_id TEXT, record_id TEXT, record_at TEXT,"
         " PRIMARY KEY(word_key, entity_id, record_id))"
     ),
     (
@@ -156,6 +156,21 @@ def _migrate(db: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS proposals_word_display"
         " ON proposals(word, entity_id)"
     )
+    # The old progress table held no count that the shadow uses. A reset row
+    # replaces it, so an old database gives up the dead table.
+    db.execute("DROP TABLE IF EXISTS word_progress")
+    event_columns = {
+        row[1] for row in db.execute("PRAGMA table_info(word_events)").fetchall()
+    }
+    if "record_at" not in event_columns:
+        db.execute("ALTER TABLE word_events ADD COLUMN record_at TEXT")
+        # An old row holds the time of the `/log` call. The record gives the
+        # time that the count needs. A missing record keeps the old value.
+        db.execute(
+            "UPDATE word_events SET record_at = COALESCE("
+            "(SELECT at FROM records WHERE records.id = word_events.record_id), at)"
+            " WHERE record_at IS NULL"
+        )
 
 
 class Store:
@@ -476,48 +491,62 @@ class Store:
             self._db.commit()
             return cursor.rowcount > 0
 
+    def _agreement_count(self, word_key: str, entity_id: str) -> int:
+        """The events of a word after its last reset. The caller holds the lock.
+
+        The record time gives the order, not the time of the `/log` call, so a
+        second log of an old record stays behind a reset.
+        """
+        row = self._db.execute(
+            "SELECT COUNT(*) FROM word_events"
+            " WHERE word_key = ? AND entity_id = ?"
+            " AND record_at > COALESCE("
+            "(SELECT reset_at FROM word_resets"
+            " WHERE word_key = ? AND entity_id = ?), '0000')",
+            (word_key, entity_id, word_key, entity_id),
+        ).fetchone()
+        return int(row[0] or 0) if row else 0
+
     def word_agreement(self, word_key: str, entity_id: str) -> int:
         """The number of agreeing records of one shadow word, or 0.
 
         One row for each record gives the count, so the same record counts
-        once, also when `/log` writes it again.
+        once, also when `/log` writes it again. A reset gives a new start, so
+        the records before it do not count again.
         """
         with self._lock:
-            row = self._db.execute(
-                "SELECT COUNT(*) FROM word_events WHERE word_key = ? AND entity_id = ?",
-                (word_key, entity_id),
-            ).fetchone()
-        return int(row[0] or 0) if row else 0
+            return self._agreement_count(word_key, entity_id)
 
-    def add_word_event(self, word_key: str, entity_id: str, record_id: str) -> int:
+    def add_word_event(
+        self, word_key: str, entity_id: str, record_id: str, record_at: str
+    ) -> int:
         """Keep one agreeing record and return the count of the word.
 
         The primary key of the table holds the record, so a second call with
-        the same record changes no row.
+        the same record changes no row. The record time is the time of the
+        record, so a count after a reset can exclude the records before it.
         """
         with self._lock:
             self._db.execute(
                 "INSERT OR IGNORE INTO word_events"
-                "(word_key, entity_id, record_id, at) VALUES (?, ?, ?, ?)",
-                (word_key, entity_id, record_id, self._now()),
+                "(word_key, entity_id, record_id, record_at) VALUES (?, ?, ?, ?)",
+                (word_key, entity_id, record_id, record_at),
             )
-            row = self._db.execute(
-                "SELECT COUNT(*) FROM word_events WHERE word_key = ? AND entity_id = ?",
-                (word_key, entity_id),
-            ).fetchone()
+            count = self._agreement_count(word_key, entity_id)
             self._db.commit()
-        return int(row[0] or 0) if row else 0
+        return count
 
     def reset_word_agreement(self, word_key: str, entity_id: str) -> None:
-        """Delete the agreeing records of a shadow word and its count row."""
+        """Start the count of a shadow word again at the current time.
+
+        The events stay, because a later `/log` of an old record must not
+        rebuild the count. The reset time excludes every record before it.
+        """
         with self._lock:
             self._db.execute(
-                "DELETE FROM word_events WHERE word_key = ? AND entity_id = ?",
-                (word_key, entity_id),
-            )
-            self._db.execute(
-                "DELETE FROM word_progress WHERE word_key = ? AND entity_id = ?",
-                (word_key, entity_id),
+                "INSERT OR REPLACE INTO word_resets(word_key, entity_id, reset_at)"
+                " VALUES (?, ?, ?)",
+                (word_key, entity_id, self._now()),
             )
             self._db.commit()
 

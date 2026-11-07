@@ -12,7 +12,9 @@ joins the commands of the proposal and creates no row.
 
 from __future__ import annotations
 
+import logging
 import re
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -21,6 +23,11 @@ from voice_router.aliases import WordData, promote_words
 from voice_router.house import House
 from voice_router.store import Store
 from voice_router.words import NONE, fold
+
+logger = logging.getLogger(__name__)
+
+# The expected errors of a side note: the store and the word file.
+SIDE_NOTE_ERRORS = (OSError, sqlite3.Error)
 
 # The agreeing records that make a shadow word active.
 SHADOW_AGREEMENTS = 20
@@ -103,7 +110,13 @@ def _known(words: WordData) -> set[str]:
     if cached is not None:
         return cached
     known: set[str] = set()
-    for mapping in (words.domains, words.areas, words.entities, words.questions):
+    for mapping in (
+        words.domains,
+        words.areas,
+        words.entities,
+        words.questions,
+        words.shadow_entities,
+    ):
         for entries in mapping.values():
             known.update(_tokens(entries))
     for langs in words.actions.values():
@@ -302,15 +315,11 @@ def record_proposal(store: Store, house: House, record: dict) -> dict | None:
 def _final(result: dict) -> bool:
     """True when a result ends the action and may count one agreement.
 
-    A risky device marks the record pending before the person answers, so a
-    pending record with no final status does not count. A cancelled record does
-    not count either, because the action did not run.
+    A terminal status is `done` or `builtin`, so an empty result does not
+    count. A pending record waits for the person, and a cancelled record did
+    not run.
     """
-    if result.get("status") == "cancelled":
-        return False
-    return not (
-        result.get("pending") and result.get("status") not in {"done", "cancelled"}
-    )
+    return result.get("status") in {"done", "builtin"}
 
 
 def _agreed_entity(decision: dict) -> str | None:
@@ -333,16 +342,42 @@ def _agreed_entity(decision: dict) -> str | None:
     return None
 
 
+def _log_shadow_failure(
+    word: str, entity_id: str, record_id: str, error: BaseException | None
+) -> None:
+    """Log one failed side note of the shadow with its word and entity.
+
+    An expected error gives one warning. An unexpected error gives the
+    traceback, so a broken shadow path is visible.
+    """
+    if error is None:
+        logger.exception(
+            "the shadow word %s for %s at record %s failed",
+            word,
+            entity_id,
+            record_id,
+        )
+    else:
+        logger.warning(
+            "the shadow word %s for %s at record %s failed: %s",
+            word,
+            entity_id,
+            record_id,
+            error,
+        )
+
+
 def advance_shadow(
     store: Store, house: House, house_words: Path | None, record: dict
 ) -> bool:
     """Count one record for the shadow words that it used, and promote at 20.
 
     The count moves only when the record holds a final result and the
-    agreement names the entity of the word. A repeat or a correction deletes
-    the count of the word. One row for each record gives the count, so a
-    second `/log` of the same record changes no count. At 20 agreeing records
-    the word leaves the shadow part and joins the active part in one write.
+    agreement names the entity of the word. A repeat or a correction starts
+    the count of the word again, so a later `/log` of an old record does not
+    join the new count. One row for each record gives the count, so a second
+    `/log` of the same record changes no count. At 20 agreeing records the
+    word leaves the shadow part and joins the active part in one write.
     False means that no word changed the file.
     """
     if house_words is None:
@@ -358,26 +393,50 @@ def advance_shadow(
     record_id = record.get("id")
     if not isinstance(record_id, str):
         return False
+    record_at = record.get("at")
+    if not isinstance(record_at, str):
+        record_at = ""
     promotions: list[tuple[str, str]] = []
     for entity_id, words in list(house.words.shadow_entities.items()):
         for word in words:
             key = fold(word)
             if key not in applied_keys:
                 continue
-            if reset:
-                store.reset_word_agreement(key, entity_id)
-            elif (
-                _final(result)
-                and agree == entity_id
-                and store.add_word_event(key, entity_id, record_id) >= SHADOW_AGREEMENTS
-            ):
-                promotions.append((entity_id, word))
+            try:
+                if reset:
+                    store.reset_word_agreement(key, entity_id)
+                elif (
+                    _final(result)
+                    and agree == entity_id
+                    and store.add_word_event(key, entity_id, record_id, record_at)
+                    >= SHADOW_AGREEMENTS
+                ):
+                    promotions.append((entity_id, word))
+            except SIDE_NOTE_ERRORS as err:
+                _log_shadow_failure(word, entity_id, record_id, err)
+            except Exception:  # noqa: BLE001
+                _log_shadow_failure(word, entity_id, record_id, None)
     if not promotions:
         return False
-    if not promote_words(house_words, promotions):
+    try:
+        changed = promote_words(house_words, promotions)
+    except SIDE_NOTE_ERRORS as err:
+        for entity_id, word in promotions:
+            _log_shadow_failure(word, entity_id, record_id, err)
+        return False
+    except Exception:  # noqa: BLE001
+        for entity_id, word in promotions:
+            _log_shadow_failure(word, entity_id, record_id, None)
+        return False
+    if not changed:
         return False
     for entity_id, word in promotions:
-        store.add_word_change(word, entity_id, "active", "shadow", record_id)
+        try:
+            store.add_word_change(word, entity_id, "active", "shadow", record_id)
+        except SIDE_NOTE_ERRORS as err:
+            _log_shadow_failure(word, entity_id, record_id, err)
+        except Exception:  # noqa: BLE001
+            _log_shadow_failure(word, entity_id, record_id, None)
     return True
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import threading
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -36,6 +37,8 @@ from voice_router.local import ask_local, build_local
 from voice_router.settings import Settings
 from voice_router.stats import summary as stats_summary
 from voice_router.store import Store
+
+logger = logging.getLogger(__name__)
 
 # The most time that `/route` waits for the Kev answer. A later answer goes to
 # the log alone, so a slow or down server changes no reply.
@@ -143,9 +146,11 @@ async def _shadow(
 def _record_proposal(store: Store, record_id: str, house: House | None) -> None:
     """Keep a proposal for a command that the filter did not cover.
 
-    A proposal is a side note of the log. No proposal work may fail the log of
-    an action, so every error is ignored. The house is absent before the first
-    sync, and it gives the words and the filter of the proposal.
+    A proposal is a side note of the log. An expected error leaves the log of
+    the action as it is. An unexpected error goes to the log of the service
+    with the operation and the record id, so a broken path is visible. The
+    house is absent before the first sync, and it gives the words and the
+    filter of the proposal.
     """
     if house is None:
         return
@@ -158,10 +163,10 @@ def _record_proposal(store: Store, record_id: str, house: House | None) -> None:
         if not isinstance(proposal, dict) or not proposal.get("device"):
             return
         proposals.record_proposal(store, house, record)
-    except Exception:  # noqa: BLE001, S110
-        # The log of the action is the important record. A broken proposal
-        # must not break it, and the service logs nothing here.
-        pass
+    except proposals.SIDE_NOTE_ERRORS as err:
+        logger.warning("the proposal of record %s failed: %s", record_id, err)
+    except Exception:
+        logger.exception("the proposal of record %s failed", record_id)
 
 
 def _advance_shadow(
@@ -169,8 +174,9 @@ def _advance_shadow(
 ) -> bool:
     """Count the shadow words of a record, and promote a word at 20.
 
-    The count is a side note of the log. No error may fail the log of an
-    action, so every error is ignored. True means that the word file changed.
+    The count is a side note of the log. An expected error keeps the log of
+    the action successful. An unexpected error goes to the log of the service
+    with the record id. True means that the word file changed.
     """
     if house is None:
         return False
@@ -179,7 +185,11 @@ def _advance_shadow(
         if record is None:
             return False
         return proposals.advance_shadow(store, house, house_words, record)
-    except Exception:  # noqa: BLE001
+    except proposals.SIDE_NOTE_ERRORS as err:
+        logger.warning("the shadow of record %s failed: %s", record_id, err)
+        return False
+    except Exception:
+        logger.exception("the shadow of record %s failed", record_id)
         return False
 
 
@@ -327,16 +337,21 @@ def create_app(
 
         A later mark joins the result and does not replace it, so a repeat or
         a correction keeps the status of the action. A command whose filter
-        found no word gives a proposal too. A shadow word counts the agreement
-        of Kev with Jev, and it becomes active at 20 records.
+        found no word gives a proposal too, when the house has a word file. A
+        shadow word counts the agreement of Kev with Jev, and it becomes
+        active at 20 records.
         """
         if not store.merge_result(body.record_id, body.result):
             raise HTTPException(status_code=404, detail="unknown record")
-        _record_proposal(store, body.record_id, app.state.house)
+        if settings.house_words is not None:
+            # A confirm needs the house file, so a proposal without the file
+            # can only end in a refusal.
+            _record_proposal(store, body.record_id, app.state.house)
         if _advance_shadow(
             store, app.state.house, settings.house_words, body.record_id
         ):
-            reload_house()
+            with DECISION_LOCK:
+                reload_house()
         return Response(status_code=204)
 
     @app.get("/proposals")
@@ -394,8 +409,11 @@ def create_app(
                 store.add_word_change(
                     row["word"], row["entity_id"], "refused", "refuse", None
                 )
+            if body.decision == "confirm":
+                # The reload runs under the lock, so a second confirm cannot
+                # replace the house with a copy that misses this word.
+                reload_house()
         if body.decision == "confirm":
-            reload_house()
             return {"status": "confirmed", "shadow": True}
         return {"status": "refused"}
 

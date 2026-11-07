@@ -7,8 +7,10 @@ registry.
 """
 
 import json
+import logging
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -175,6 +177,7 @@ def settings(tmp_path: Path) -> Settings:
         token=TOKEN,
         openrouter_key="test-key",
         db=tmp_path / "router.db",
+        house_words=tmp_path / "house_words.json",
     )
 
 
@@ -663,7 +666,7 @@ def test_the_common_missed_word_case_makes_a_proposal_at_the_log(
 
     routed = client.post(
         "/route",
-        json={"text": "liga as luzes do lustre", "language": "pt", "room": "Sala"},
+        json={"text": "liga as luzes do abajur", "language": "pt", "room": "Sala"},
         headers=HEADERS,
     )
 
@@ -687,7 +690,80 @@ def test_the_common_missed_word_case_makes_a_proposal_at_the_log(
     assert response.status_code == 204
     stored = proposals.list_proposals(store)
     assert len(stored) == 1
-    assert stored[0]["word"] == "lustre"
+    assert stored[0]["word"] == "abajur"
     assert stored[0]["entity_id"] == "light.lustre"
     assert stored[0]["before_count"] == 3
     assert stored[0]["after_count"] == 4
+
+
+def test_no_house_words_file_makes_no_proposal(settings: Settings, store: Store):
+    """A proposal that every confirm must refuse does not belong in the queue."""
+    no_words = replace(settings, house_words=None)
+    client = TestClient(create_app(no_words, ApiFakeJev(device="light.sala"), store))
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    routed = client.post(
+        "/route",
+        json={"text": "liga o abajur", "language": "pt"},
+        headers=HEADERS,
+    )
+
+    assert routed.status_code == 200
+    body = routed.json()
+    assert body["proposal"]["device"] == "light.sala"
+    response = client.post(
+        "/log",
+        json={"record_id": body["record_id"], "result": {"status": "done"}},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 204
+    assert proposals.list_proposals(store) == []
+
+
+def test_an_unexpected_proposal_error_is_logged(
+    settings: Settings,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog,
+):
+    """The log keeps its answer, and the broken proposal path is visible."""
+    client = make_client(settings, store)
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+    record = add_record(store, "liga o abajur da sala")
+
+    def fail(*args) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("voice_router.api.proposals.record_proposal", fail)
+
+    with caplog.at_level(logging.ERROR, logger="voice_router.api"):
+        response = client.post(
+            "/log",
+            json={"record_id": record["id"], "result": {"status": "done"}},
+            headers=HEADERS,
+        )
+
+    assert response.status_code == 204
+    messages = [item.getMessage() for item in caplog.records]
+    assert any("proposal" in text and record["id"] in text for text in messages)
+
+
+def test_a_shadow_word_is_known_and_makes_no_proposal(words: WordData):
+    """A confirmed word is covered, so detection does not run again."""
+    shadowed = replace(
+        words,
+        shadow_entities={"light.sala": ["abajur"]},
+        version="shadow-words-v1",
+    )
+
+    assert "abajur" in proposals._known(shadowed)
+    assert proposals.missed_word("liga o abajur", shadowed) is None
+
+
+def test_only_a_terminal_status_is_final():
+    assert proposals._final({}) is False
+    assert proposals._final({"pending": True}) is False
+    assert proposals._final({"status": "cancelled"}) is False
+    assert proposals._final({"status": "done"}) is True
+    assert proposals._final({"status": "builtin"}) is True

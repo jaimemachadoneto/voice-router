@@ -8,6 +8,7 @@ a real registry.
 """
 
 import json
+import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from tests.router.test_api import FakeJev as ApiFakeJev
 from tests.router.test_api import FakeLocal
+from voice_router import api
 from voice_router.api import create_app
 from voice_router.house import House
 from voice_router.jev import Answer
@@ -147,7 +149,10 @@ def log_record(client: TestClient, record_id: str, result: dict | None = None) -
     """Log the result of a stored record."""
     response = client.post(
         "/log",
-        json={"record_id": record_id, "result": result or {"status": "done"}},
+        json={
+            "record_id": record_id,
+            "result": result if result is not None else {"status": "done"},
+        },
         headers=HEADERS,
     )
     assert response.status_code == 204
@@ -268,6 +273,102 @@ def test_a_correction_resets_the_count(tmp_path: Path):
     assert data["reviewed"]["shadow"]["light.sala"] == ["abajur"]
     assert "abajur" not in data["reviewed"].get("entities", {}).get("light.sala", [])
     assert app.state.house.filter("liga o abajur").options is None
+
+
+def test_a_correction_keeps_the_old_records_out_of_the_count(tmp_path: Path):
+    """A re-log of an old record must not rebuild the count after a reset."""
+    path = tmp_path / "house_words.json"
+    write_shadow_words(path, ["abajur"])
+    client, _settings, store, app = make_client(tmp_path)
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    originals = [add_agreeing_record(store) for _ in range(19)]
+    for record_id in originals:
+        log_record(client, record_id)
+    assert store.word_agreement(fold("abajur"), "light.sala") == 19
+
+    corrected = add_agreeing_record(
+        store, result={"status": "done", "correction": True}
+    )
+    log_record(client, corrected, result={"status": "done", "correction": True})
+    assert store.word_agreement(fold("abajur"), "light.sala") == 0
+
+    for record_id in originals:
+        log_record(client, record_id)
+
+    assert store.word_agreement(fold("abajur"), "light.sala") == 0
+
+    log_record(client, add_agreeing_record(store))
+
+    assert store.word_agreement(fold("abajur"), "light.sala") == 1
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["reviewed"]["shadow"]["light.sala"] == ["abajur"]
+    assert "abajur" not in data["reviewed"].get("entities", {}).get("light.sala", [])
+    assert app.state.house.filter("liga o abajur").options is None
+
+
+def test_an_empty_result_does_not_count(tmp_path: Path):
+    path = tmp_path / "house_words.json"
+    write_shadow_words(path, ["abajur"])
+    client, _settings, store, _app = make_client(tmp_path)
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+    record_id = add_agreeing_record(store, result={})
+
+    log_record(client, record_id, result={})
+
+    assert store.word_agreement(fold("abajur"), "light.sala") == 0
+
+
+def test_a_failed_shadow_word_is_logged_and_the_log_succeeds(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+):
+    path = tmp_path / "house_words.json"
+    write_shadow_words(path, ["abajur"])
+    client, _settings, store, _app = make_client(tmp_path)
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+    record_id = add_agreeing_record(store)
+
+    def fail(*args, **kwargs) -> int:
+        raise sqlite3.OperationalError("boom")
+
+    monkeypatch.setattr(store, "add_word_event", fail)
+
+    with caplog.at_level(logging.WARNING, logger="voice_router.proposals"):
+        log_record(client, record_id)
+
+    messages = [item.getMessage() for item in caplog.records]
+    assert any(
+        "abajur" in text and "light.sala" in text and record_id in text
+        for text in messages
+    )
+
+
+def test_a_confirm_reloads_the_house_under_the_decision_lock(
+    tmp_path: Path,
+    monkeypatch,
+):
+    client, _settings, _store, _app = make_client(tmp_path)
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+    route_and_log(client)
+    item = first_proposal(client)
+    real_load = api.load_word_data
+    locked: list[bool] = []
+
+    def spy(path):
+        locked.append(api.DECISION_LOCK.locked())
+        return real_load(path)
+
+    monkeypatch.setattr(api, "load_word_data", spy)
+
+    client.post(
+        "/proposal",
+        json={"id": item["id"], "decision": "confirm", "by": "Ana"},
+        headers=HEADERS,
+    )
+
+    assert locked == [True]
 
 
 def test_an_unknown_id_is_404_and_a_decided_id_is_409(tmp_path: Path):
