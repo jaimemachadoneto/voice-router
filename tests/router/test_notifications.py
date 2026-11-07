@@ -175,6 +175,18 @@ def test_the_daily_item_counts_the_proposed_items_once(store: Store):
     assert tomorrow[0]["count"] == 2
 
 
+def test_a_day_with_nothing_to_do_gives_no_daily_item(store: Store):
+    # An empty summary is noise, so the day stays unreported until work waits.
+    assert daily(notifications.due(store, NOW)) == []
+
+    add_proposal(store, "abajur", ["liga o abajur"])
+
+    # The same day now has an item, because the day was not marked as reported.
+    later = daily(notifications.due(store, NOW))
+    assert len(later) == 1
+    assert later[0]["count"] == 1
+
+
 def test_the_endpoint_returns_the_due_items(
     settings: Settings, store: Store, monkeypatch: pytest.MonkeyPatch
 ):

@@ -55,8 +55,10 @@ def due(store: Store, now: datetime) -> list[dict]:
                     "entity_id": proposal["entity_id"],
                 }
             )
+    # Nothing to do gives no summary, and the day stays unreported, so work
+    # that waits later in the day still gives its one summary.
     daily_key = f"daily:{now.date().isoformat()}"
-    if _reported(store, daily_key, now):
+    if proposed and _reported(store, daily_key, now):
         items.append(
             {
                 "key": daily_key,
