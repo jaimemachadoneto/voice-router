@@ -39,6 +39,16 @@ _SCHEMA = (
         "word_key TEXT, entity_id TEXT, agreements INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY(word_key, entity_id))"
     ),
+    (
+        "CREATE TABLE IF NOT EXISTS word_events("
+        "word_key TEXT, entity_id TEXT, record_id TEXT, at TEXT,"
+        " PRIMARY KEY(word_key, entity_id, record_id))"
+    ),
+    (
+        "CREATE TABLE IF NOT EXISTS word_changes("
+        "at TEXT, word TEXT, entity_id TEXT, change TEXT, source TEXT,"
+        " record_id TEXT)"
+    ),
 )
 
 # The columns of a proposal row, in the order that `_proposal` reads them.
@@ -467,56 +477,68 @@ class Store:
             return cursor.rowcount > 0
 
     def word_agreement(self, word_key: str, entity_id: str) -> int:
-        """The number of agreeing records of one shadow word, or 0."""
+        """The number of agreeing records of one shadow word, or 0.
+
+        One row for each record gives the count, so the same record counts
+        once, also when `/log` writes it again.
+        """
         with self._lock:
             row = self._db.execute(
-                "SELECT agreements FROM word_progress"
-                " WHERE word_key = ? AND entity_id = ?",
+                "SELECT COUNT(*) FROM word_events WHERE word_key = ? AND entity_id = ?",
                 (word_key, entity_id),
             ).fetchone()
         return int(row[0] or 0) if row else 0
 
-    def add_word_agreement(self, word_key: str, entity_id: str) -> int:
-        """Add one agreeing record to a shadow word, and return the count."""
+    def add_word_event(self, word_key: str, entity_id: str, record_id: str) -> int:
+        """Keep one agreeing record and return the count of the word.
+
+        The primary key of the table holds the record, so a second call with
+        the same record changes no row.
+        """
         with self._lock:
+            self._db.execute(
+                "INSERT OR IGNORE INTO word_events"
+                "(word_key, entity_id, record_id, at) VALUES (?, ?, ?, ?)",
+                (word_key, entity_id, record_id, self._now()),
+            )
             row = self._db.execute(
-                "SELECT agreements FROM word_progress"
-                " WHERE word_key = ? AND entity_id = ?",
+                "SELECT COUNT(*) FROM word_events WHERE word_key = ? AND entity_id = ?",
                 (word_key, entity_id),
             ).fetchone()
-            value = (int(row[0] or 0) if row else 0) + 1
-            if row is None:
-                self._db.execute(
-                    "INSERT INTO word_progress(word_key, entity_id, agreements)"
-                    " VALUES (?, ?, ?)",
-                    (word_key, entity_id, value),
-                )
-            else:
-                self._db.execute(
-                    "UPDATE word_progress SET agreements = ?"
-                    " WHERE word_key = ? AND entity_id = ?",
-                    (value, word_key, entity_id),
-                )
             self._db.commit()
-        return value
+        return int(row[0] or 0) if row else 0
 
     def reset_word_agreement(self, word_key: str, entity_id: str) -> None:
-        """Set the count of a shadow word to zero."""
+        """Delete the agreeing records of a shadow word and its count row."""
         with self._lock:
-            row = self._db.execute(
-                "SELECT 1 FROM word_progress WHERE word_key = ? AND entity_id = ?",
+            self._db.execute(
+                "DELETE FROM word_events WHERE word_key = ? AND entity_id = ?",
                 (word_key, entity_id),
-            ).fetchone()
-            if row is None:
-                self._db.execute(
-                    "INSERT INTO word_progress(word_key, entity_id, agreements)"
-                    " VALUES (?, ?, 0)",
-                    (word_key, entity_id),
-                )
-            else:
-                self._db.execute(
-                    "UPDATE word_progress SET agreements = 0"
-                    " WHERE word_key = ? AND entity_id = ?",
-                    (word_key, entity_id),
-                )
+            )
+            self._db.execute(
+                "DELETE FROM word_progress WHERE word_key = ? AND entity_id = ?",
+                (word_key, entity_id),
+            )
+            self._db.commit()
+
+    def add_word_change(
+        self,
+        word: str,
+        entity_id: str,
+        change: str,
+        source: str,
+        record_id: str | None,
+    ) -> None:
+        """Keep one change of a word list with its date, source and command.
+
+        The rearrangement of a word list is the record that lets a person find
+        a bad word later.
+        """
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO word_changes"
+                "(at, word, entity_id, change, source, record_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (self._now(), word, entity_id, change, source, record_id),
+            )
             self._db.commit()

@@ -299,14 +299,38 @@ def record_proposal(store: Store, house: House, record: dict) -> dict | None:
     return _with_change(merged)
 
 
-def _answers_agree(decision: dict) -> bool:
-    """True when the Kev choice is the Jev device choice."""
+def _final(result: dict) -> bool:
+    """True when a result ends the action and may count one agreement.
+
+    A risky device marks the record pending before the person answers, so a
+    pending record with no final status does not count. A cancelled record does
+    not count either, because the action did not run.
+    """
+    if result.get("status") == "cancelled":
+        return False
+    return not (
+        result.get("pending") and result.get("status") not in {"done", "cancelled"}
+    )
+
+
+def _agreed_entity(decision: dict) -> str | None:
+    """The entity that the agreement of a record names, or None.
+
+    An agreement is one of two things. Kev and Jev agree, and the agreed
+    device is the entity. Or the shadow filter gave exactly one option, that
+    option is the entity and Jev chose it. The shadow period validates the
+    word, and one option means the word alone selected the device.
+    """
+    jev = decision.get("jev") or {}
+    jev_choice = (jev.get("device") or {}).get("choice")
     local = decision.get("local") or {}
     choice = local.get("choice")
-    if not isinstance(choice, str) or choice == NONE:
-        return False
-    device = (decision.get("jev") or {}).get("device") or {}
-    return device.get("choice") == choice
+    if isinstance(choice, str) and choice != NONE and jev_choice == choice:
+        return choice
+    options = decision.get("shadow_options")
+    if isinstance(options, list) and len(options) == 1 and options[0] == jev_choice:
+        return options[0]
+    return None
 
 
 def advance_shadow(
@@ -314,10 +338,12 @@ def advance_shadow(
 ) -> bool:
     """Count one record for the shadow words that it used, and promote at 20.
 
-    The count moves only when Kev agrees with Jev and the result holds no
-    repeat or correction. A repeat or a correction sets the count of the word
-    to zero. At 20 agreeing records the word leaves the shadow part and joins
-    the active part in one write. False means that no word changed the file.
+    The count moves only when the record holds a final result and the
+    agreement names the entity of the word. A repeat or a correction deletes
+    the count of the word. One row for each record gives the count, so a
+    second `/log` of the same record changes no count. At 20 agreeing records
+    the word leaves the shadow part and joins the active part in one write.
+    False means that no word changed the file.
     """
     if house_words is None:
         return False
@@ -328,22 +354,31 @@ def advance_shadow(
     applied_keys = {fold(word) for word in applied if isinstance(word, str)}
     result = record.get("result") or {}
     reset = bool(result.get("repeat") or result.get("correction"))
-    agree = _answers_agree(decision)
+    agree = _agreed_entity(decision)
+    record_id = record.get("id")
+    if not isinstance(record_id, str):
+        return False
     promotions: list[tuple[str, str]] = []
     for entity_id, words in list(house.words.shadow_entities.items()):
         for word in words:
-            if fold(word) not in applied_keys:
-                continue
             key = fold(word)
+            if key not in applied_keys:
+                continue
             if reset:
                 store.reset_word_agreement(key, entity_id)
             elif (
-                agree and store.add_word_agreement(key, entity_id) >= SHADOW_AGREEMENTS
+                _final(result)
+                and agree == entity_id
+                and store.add_word_event(key, entity_id, record_id) >= SHADOW_AGREEMENTS
             ):
                 promotions.append((entity_id, word))
     if not promotions:
         return False
-    return promote_words(house_words, promotions)
+    if not promote_words(house_words, promotions):
+        return False
+    for entity_id, word in promotions:
+        store.add_word_change(word, entity_id, "active", "shadow", record_id)
+    return True
 
 
 def list_proposals(store: Store, status: str = "proposed") -> list[dict]:

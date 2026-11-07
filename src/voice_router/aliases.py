@@ -250,6 +250,27 @@ def add_shadow_word(path: Path, entity_id: str, word: str) -> None:
         _write_reviewed(path, data, reviewed)
 
 
+def prune_shadow_words(path: Path, entity_ids: set[str]) -> bool:
+    """Remove the shadow words of the entities that the registry left.
+
+    A shadow word names its entity, so it has no meaning after the entity goes.
+    The function holds `ALIASES_LOCK` across the read-modify-write. True means
+    that the file changed, and it changes only when an entity leaves.
+    """
+    with ALIASES_LOCK:
+        data, reviewed = _reviewed(path)
+        shadow = reviewed.get("shadow")
+        if not isinstance(shadow, dict):
+            return False
+        removed = [entity_id for entity_id in shadow if entity_id not in entity_ids]
+        if not removed:
+            return False
+        for entity_id in removed:
+            del shadow[entity_id]
+        _write_reviewed(path, data, reviewed)
+        return True
+
+
 def promote_words(path: Path, words: list[tuple[str, str]]) -> bool:
     """Move words from the shadow part to the active part of the reviewed words.
 

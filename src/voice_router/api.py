@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import threading
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +23,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from voice_router import proposals
-from voice_router.aliases import add_shadow_word, load_word_data, write_generated
+from voice_router.aliases import (
+    add_shadow_word,
+    load_word_data,
+    prune_shadow_words,
+    write_generated,
+)
 from voice_router.decide import DEVICE_COMMAND, decide
 from voice_router.house import House
 from voice_router.jev import Jev
@@ -34,6 +40,11 @@ from voice_router.store import Store
 # The most time that `/route` waits for the Kev answer. A later answer goes to
 # the log alone, so a slow or down server changes no reply.
 SHADOW_GRACE = 0.05
+
+# The lock of one decision on a proposal. The read of the row, the test of its
+# status, the write of the word file and the update of the row run as one
+# critical section, so a second decision cannot write a refused word.
+DECISION_LOCK = threading.Lock()
 
 
 class SyncEntity(BaseModel):
@@ -77,7 +88,7 @@ class ProposalBody(BaseModel):
 
     id: str
     decision: Literal["confirm", "refuse"]
-    by: str
+    by: str = Field(min_length=1, max_length=80)
 
 
 def _consume(task: asyncio.Task) -> None:
@@ -202,11 +213,20 @@ def create_app(
     app.state.stale_since = store.first_sync_at(words.version)
 
     def reload_house() -> None:
-        """Load the house again after a reviewed word changed."""
+        """Load the house again after a reviewed word changed.
+
+        A changed words version starts the stale period of the local route at
+        the moment of the change, so the time is not None and not from an
+        older version. A write that changes no word keeps the time.
+        """
         payload = store.last_sync()
         if payload is None:
             return
-        app.state.house = House.from_sync(payload, load_word_data(settings.house_words))
+        old = app.state.house
+        updated = House.from_sync(payload, load_word_data(settings.house_words))
+        app.state.house = updated
+        if old is None or updated.words.version != old.words.version:
+            app.state.stale_since = datetime.now(UTC).isoformat()
 
     def check_token(authorization: str | None = Header(default=None)) -> None:
         """Refuse a call that does not carry the token of the settings."""
@@ -230,6 +250,9 @@ def create_app(
         house = House.from_sync(payload, before)
         if settings.house_words is not None:
             write_generated(settings.house_words, house)
+            # A shadow word of an entity that the registry left has no
+            # meaning, so the sync removes it.
+            prune_shadow_words(settings.house_words, set(house.entities))
             house = House.from_sync(payload, load_word_data(settings.house_words))
         store.save_sync(payload, house.words.version)
         app.state.stale_since = store.first_sync_at(house.words.version)
@@ -287,6 +310,9 @@ def create_app(
             del decision_dict["proposal"]
         decision_dict["alias_version"] = house.words.version
         decision_dict["registry_hash"] = house.registry_hash
+        # The shadow set is what Kev reads. The shadow period needs it to
+        # accept one option that the word alone selected.
+        decision_dict["shadow_options"] = shadow.options
         record_id = store.add_record(
             {"request": body.model_dump(), "decision": decision_dict}
         )
@@ -328,26 +354,46 @@ def create_app(
         """Confirm or refuse one proposed word.
 
         A confirmed word joins the shadow words of its entity, so Kev reads it
-        and Jev does not. A refused word stays in the log, so the same proposal
-        does not come back. Both decisions keep the date and the author.
+        and Jev does not. The entity must still be in the house, because a
+        shadow word of an entity that left has no meaning. A refused word
+        stays in the log, so the same proposal does not come back. Both
+        decisions keep the date and the author, and record the change.
         """
-        row = store.get_proposal(body.id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="unknown proposal")
-        if row["status"] != "proposed":
-            raise HTTPException(status_code=409, detail="the proposal is not proposed")
-        if body.decision == "confirm":
-            if settings.house_words is None:
-                raise HTTPException(status_code=409, detail="no house words file")
-            # The file goes first, so a failed write keeps the row proposed
-            # and the person can try again.
-            add_shadow_word(settings.house_words, row["entity_id"], row["word"])
-        status = "confirmed" if body.decision == "confirm" else "refused"
-        if not store.decide_proposal(
-            body.id, status, body.by, datetime.now(UTC).isoformat()
-        ):
-            # Another writer decided the row during this call.
-            raise HTTPException(status_code=409, detail="the proposal is not proposed")
+        with DECISION_LOCK:
+            row = store.get_proposal(body.id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="unknown proposal")
+            if row["status"] != "proposed":
+                raise HTTPException(
+                    status_code=409, detail="the proposal is not proposed"
+                )
+            if body.decision == "confirm":
+                if settings.house_words is None:
+                    raise HTTPException(status_code=409, detail="no house words file")
+                house = app.state.house
+                if house is None or row["entity_id"] not in house.entities:
+                    raise HTTPException(
+                        status_code=409, detail="the entity is not in the house"
+                    )
+                # The file goes first, so a failed write keeps the row proposed
+                # and the person can try again.
+                add_shadow_word(settings.house_words, row["entity_id"], row["word"])
+            status = "confirmed" if body.decision == "confirm" else "refused"
+            if not store.decide_proposal(
+                body.id, status, body.by, datetime.now(UTC).isoformat()
+            ):
+                # Another writer decided the row during this call.
+                raise HTTPException(
+                    status_code=409, detail="the proposal is not proposed"
+                )
+            if body.decision == "confirm":
+                store.add_word_change(
+                    row["word"], row["entity_id"], "shadow", "confirm", None
+                )
+            else:
+                store.add_word_change(
+                    row["word"], row["entity_id"], "refused", "refuse", None
+                )
         if body.decision == "confirm":
             reload_house()
             return {"status": "confirmed", "shadow": True}
