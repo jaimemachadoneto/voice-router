@@ -1,0 +1,18 @@
+# Findings that the scanner reports from the base image, and that this image
+# already closes.
+#
+# `python:3.14-slim` carries msgpack 1.1.2, setuptools 70.3.0 and urllib3
+# 2.7.0. The Dockerfile installs 1.2.4, 84.2.1 and 2.8.0 after the project,
+# and `pip list` in the built image shows only those. No 1.1.2, 70.3.0 or
+# 2.7.0 metadata is in the final filesystem: `find / -name '*msgpack*dist-info*'`
+# returns one path, for 1.2.4. The scanner still reports the base image
+# versions, so these entries record that the fix is in place and keep the
+# gate useful for the next finding.
+#
+# Remove an entry when the base image no longer carries the old package, and
+# check first that the new version is still in the image.
+CVE-2026-114613   # msgpack: DoS in map deserialization
+GHSA-6v7p-g79w-8964  # msgpack: out-of-bounds read on Unpacker reuse
+CVE-2025-47273    # setuptools: path traversal in PackageIndex
+CVE-2026-97687    # urllib3: proxy TLS configuration override
+CVE-2026-97689    # urllib3: DoS in the chunk parser
