@@ -281,6 +281,28 @@ def test_log_joins_the_result_to_the_record(settings: Settings):
     assert stored["result"] == result
 
 
+def test_the_log_merge_keeps_the_action_result(settings: Settings):
+    """A later mark joins the result of the action and does not replace it."""
+    store = Store(settings.db)
+    client = make_client(settings, store)
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+    record_id = client.post("/route", json=ROUTE_BODY, headers=HEADERS).json()[
+        "record_id"
+    ]
+    store.set_result(record_id, {"status": "done"})
+
+    response = client.post(
+        "/log",
+        json={"record_id": record_id, "result": {"repeat": True}},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 204
+    record = store.record(record_id)
+    assert record is not None
+    assert record["result"] == {"status": "done", "repeat": True}
+
+
 def test_route_logs_the_local_answer(settings: Settings):
     store = Store(settings.db)
     client = make_client(settings, store, FakeLocal(answer=LOCAL_ANSWER))

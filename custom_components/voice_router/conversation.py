@@ -35,6 +35,7 @@ from .sync import exposed_risky, is_risky
 DEVICE_COMMAND = "device_command"
 OFFLINE = "offline"
 CONFIRM_SECONDS = 30
+REPEAT_SECONDS = 20
 LANGUAGES = ["pt", "en", "es"]
 
 
@@ -45,6 +46,16 @@ class Pending:
     decision: dict[str, Any]
     record_id: str
     expires: datetime
+
+
+@dataclass
+class LastCommand:
+    """The last command of a conversation, with its record and its action."""
+
+    text: str
+    record_id: str
+    at: datetime
+    acted: bool
 
 
 def _room_name(hass: HomeAssistant, device_id: str | None) -> str | None:
@@ -85,6 +96,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         self._client = client
         self._attr_unique_id = f"voice_router_{entry.entry_id}"
         self.pending: dict[str, Pending] = {}
+        self._last: dict[str, LastCommand] = {}
 
     @property
     def supported_languages(self) -> list[str]:
@@ -185,6 +197,22 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         # that the answer does not match.
         self.pending.pop(conversation_id, None)
 
+        # A repeat or a correction marks the record of the previous action, so
+        # the log says which actions were wrong. The mark never changes the
+        # current request.
+        last = self._last.get(conversation_id)
+        if (
+            last is not None
+            and last.record_id
+            and last.acted
+            and (utcnow() - last.at).total_seconds() <= REPEAT_SECONDS
+        ):
+            normalized = text.strip().lower()
+            if normalized == last.text:
+                self._async_log(last.record_id, {"repeat": True})
+            else:
+                self._async_log(last.record_id, {"correction": True})
+
         room = _room_name(self.hass, user_input.device_id)
         try:
             decision = await self._client.route(
@@ -195,6 +223,10 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
 
         record_id = decision.get("record_id", "")
         route: str = decision.get("route", "")
+        if record_id:
+            self._last[conversation_id] = LastCommand(
+                text.strip().lower(), record_id, utcnow(), bool(decision.get("act"))
+            )
 
         if route == DEVICE_COMMAND and decision.get("act"):
             entity_ids = decision.get("entity_ids", [])
@@ -209,6 +241,11 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
                     decision=decision,
                     record_id=record_id,
                     expires=utcnow() + timedelta(seconds=CONFIRM_SECONDS),
+                )
+                # The confirmation acts later, so the record of the command is
+                # the one that a repeat or a correction must mark.
+                self._last[conversation_id] = LastCommand(
+                    text.strip().lower(), record_id, utcnow(), True
                 )
                 self._async_log(record_id, {"pending": True})
                 return self._reply(

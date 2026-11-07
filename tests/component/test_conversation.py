@@ -507,3 +507,101 @@ async def test_each_request_sends_a_log(
     log_calls = _calls_to(aioclient_mock, LOG_URL)
     assert len(log_calls) == 1
     assert log_calls[0][2]["record_id"] == "record-42"
+
+
+def _log_bodies(aioclient_mock) -> list[dict[str, Any]]:
+    """Give the body of each call to the log route."""
+    return [call[2] for call in _calls_to(aioclient_mock, LOG_URL)]
+
+
+async def test_a_repeated_command_marks_the_previous_record(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A repeated command within 20 s marks the previous record as a repeat."""
+    async_mock_service(hass, "fan", "turn_off")
+    hass.states.async_set("fan.office", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(entity_ids=["fan.office"], record_id="rec1"),
+        _decision(entity_ids=["fan.office"], record_id="rec2"),
+    )
+
+    await _ask(hass, "turn off the fan")
+    await _ask(hass, "turn off the fan")
+
+    assert {
+        "record_id": "rec1",
+        "result": {"repeat": True},
+    } in _log_bodies(aioclient_mock)
+
+
+async def test_a_corrected_command_marks_the_previous_record(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A different command within 20 s marks the previous record as a correction."""
+    async_mock_service(hass, "fan", "turn_off")
+    async_mock_service(hass, "light", "turn_off")
+    hass.states.async_set("fan.office", "on")
+    hass.states.async_set("light.kitchen", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(entity_ids=["fan.office"], record_id="rec1"),
+        _decision(entity_ids=["light.kitchen"], record_id="rec2"),
+    )
+
+    await _ask(hass, "turn off the fan")
+    await _ask(hass, "turn off the light")
+
+    assert {
+        "record_id": "rec1",
+        "result": {"correction": True},
+    } in _log_bodies(aioclient_mock)
+
+
+async def test_a_command_after_20_seconds_marks_nothing(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock, freezer
+) -> None:
+    """A command after 20 s does not mark the previous record."""
+    async_mock_service(hass, "fan", "turn_off")
+    hass.states.async_set("fan.office", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(entity_ids=["fan.office"], record_id="rec1"),
+        _decision(entity_ids=["fan.office"], record_id="rec2"),
+    )
+
+    await _ask(hass, "turn off the fan")
+    freezer.tick(timedelta(seconds=21))
+    await _ask(hass, "turn off the fan")
+
+    for body in _log_bodies(aioclient_mock):
+        assert "repeat" not in body["result"]
+        assert "correction" not in body["result"]
+
+
+async def test_a_different_conversation_marks_nothing(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A command in another conversation does not mark the previous record."""
+    async_mock_service(hass, "fan", "turn_off")
+    hass.states.async_set("fan.office", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(entity_ids=["fan.office"], record_id="rec1"),
+        _decision(entity_ids=["fan.office"], record_id="rec2"),
+    )
+
+    await _ask(hass, "turn off the fan", conversation_id="conv-1")
+    await _ask(hass, "turn off the fan", conversation_id="conv-2")
+
+    for body in _log_bodies(aioclient_mock):
+        assert "repeat" not in body["result"]
+        assert "correction" not in body["result"]

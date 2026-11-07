@@ -187,9 +187,16 @@ def create_app(
 
     @app.post("/log", status_code=204)
     def log(body: LogBody, _: None = Depends(check_token)) -> Response:
-        """Join the result of the action to the record of its command."""
-        if not store.set_result(body.record_id, body.result):
+        """Join the result of the action to the record of its command.
+
+        A later mark joins the result and does not replace it, so a repeat or
+        a correction keeps the status of the action.
+        """
+        existing = store.record(body.record_id)
+        if existing is None:
             raise HTTPException(status_code=404, detail="unknown record")
+        merged = {**(existing.get("result") or {}), **body.result}
+        store.set_result(body.record_id, merged)
         return Response(status_code=204)
 
     @app.get("/health")
