@@ -6,7 +6,7 @@ contract, the router settings, the measurement and the promotion checklist.
 ## What Kev is
 
 Kev is a small decision model on the GPU of the `ai` host. It answers the
-device question of the router: which device of the offered set fits the
+device question of the router: which of the offered devices fits the
 command.
 
 Kev speaks the System One API. Jev speaks the same API through OpenRouter. The
@@ -71,32 +71,32 @@ service needs no secret.
 | `VOICE_ROUTER_KEV_URL` | none | The URL of the Kev service. No local route when unset. |
 | `VOICE_ROUTER_KEV_MODEL` | `kev` | The model name in the request. |
 | `VOICE_ROUTER_KEV_LIMIT` | `0.25` | The most seconds for one Kev call. |
-| `VOICE_ROUTER_LOCAL_FIRST` | false | The local-first switch. `1`, `true` or `yes` turns it on. |
+| `VOICE_ROUTER_LOCAL_FIRST` | false | The local-first switch. `1`, `true` or `yes` sets the switch to on. |
 
 ## The shadow
 
 The router sends the device question to Kev beside Jev when the filter offers
-2 or more options. The Kev call never changes the Jev answer.
+2 or more options. In the shadow, the Kev call never changes the reply.
 
 The reply waits at most 0.05 s for the Kev answer. On a device command, a real
 answer within the grace goes into the reply and into the record. A later
 answer goes to the record's `decision.local` alone.
 
-The shadow never acts. A slow or down Kev server changes no reply. A failed
-call writes an error to `decision.local`.
+The shadow never acts. A slow or down Kev server changes no reply. On a device
+command, a failed call writes an error to `decision.local`.
 
 ## The offline gate
 
-When Jev fails or answers too late, the router uses the words alone. The gate
-acts on one device only, with these rules:
+When Jev fails or answers too late, the router uses the offline gate. The gate
+acts only on the offered devices, with these rules:
 
-- The filter offers 2 or 3 options.
+- The filter offers at most 3 options.
 - The words name exactly one action.
 - The words hold no question word.
 
 For 2 or 3 options, the gate asks Kev. Kev acts only when `choose()` accepts a
 strong answer and the choice is one of the offered devices. A weak answer or an
-answer outside the offered set does not act.
+answer outside the offered devices does not act.
 
 Without a Kev client, a set of 2 or 3 options does not act. A single option
 acts from the words alone.
@@ -122,8 +122,8 @@ voice-router export-training --db <path> --out <dir> [--house-words <path>]
 ```
 
 The command writes `train.kev.jsonl` in the output folder. Each line is one
-record of the device question, in the shape of the service contract, with one
-more field: `questions.device.label`.
+record of the device question, in the shape of the service contract, without
+`model`, with one more field: `questions.device.label`.
 
 The label is the entity that the router acted on. When the router did not act
 and the device answer is `none`, the label is `none`.
@@ -138,8 +138,8 @@ The user confirms the exact command before the run.
 
 The measured run took about 54 minutes.
 
-A change to the entity registry must start a new run. This automatic run is a
-later task.
+Start a new training run after a change to the entity registry. This automatic
+run is a later task.
 
 ## The promotion checklist
 
@@ -163,9 +163,11 @@ automatic run, which is a later task.
 
 ## The deployment
 
-The Kev service runs on the `ai` host. Start the service before the router.
-Set `VOICE_ROUTER_KEV_URL` to the URL of the service. The path ends in
-`/v1/systemone`.
+The Kev service runs on the `ai` host.
+
+1. Start the service before the router.
+2. Set `VOICE_ROUTER_KEV_URL` to the URL of the service. The path ends in
+   `/v1/systemone`.
 
 The service needs no key, because it is on the home network. The command text
 and the entity text stay in the house for Kev. Jev still sends the same text to
@@ -173,8 +175,8 @@ OpenRouter.
 
 ## Parked
 
-The service and the training need access to the `ai` host. This session has no
-SSH key for the `ai` host. The user must start the service and run the training
-later.
+The service and the training need access to the `ai` host. The current work has
+no SSH key for the `ai` host yet. The user must start the service. The user must
+run the training later.
 
 The first 100 real device commands and the switch also wait for the user.

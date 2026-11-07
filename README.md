@@ -27,7 +27,7 @@ The service reads the process environment at start.
 | `VOICE_ROUTER_KEV_URL` | No | none | The URL of the Kev service. No local route when unset. |
 | `VOICE_ROUTER_KEV_MODEL` | No | `kev` | The model name of Kev. |
 | `VOICE_ROUTER_KEV_LIMIT` | No | `0.25` | The Kev time limit in seconds. |
-| `VOICE_ROUTER_LOCAL_FIRST` | No | false | The local-first switch. `1`, `true` or `yes` turns it on. |
+| `VOICE_ROUTER_LOCAL_FIRST` | No | false | The local-first switch. `1`, `true` or `yes` sets the switch to on. |
 
 **`OPENROUTER_API_KEY` and `VOICE_ROUTER_OPENROUTER_KEY_FILE` are EXCLUSIVE.
 Set exactly one of them.** The service stops at start if it finds both, or
