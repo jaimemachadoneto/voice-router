@@ -6,7 +6,9 @@ environment first, so a variable of the machine cannot change the result.
 """
 
 import asyncio
+import json
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +30,7 @@ ENV_NAMES = (
     "VOICE_ROUTER_KEV_URL",
     "VOICE_ROUTER_KEV_MODEL",
     "VOICE_ROUTER_KEV_LIMIT",
+    "VOICE_ROUTER_KEV_WORDS",
     "VOICE_ROUTER_LOCAL_FIRST",
 )
 
@@ -229,3 +232,45 @@ def test_local_first_reads_true_and_false(
     settings = Settings.from_env()
 
     assert settings.local_first is expected
+
+
+def test_build_local_holds_the_trained_version(tmp_path: Path):
+    words = tmp_path / "kev-words.json"
+    words.write_text(json.dumps({"alias_version": "sha256:trained"}), encoding="utf-8")
+    settings = Settings(
+        token=TOKEN,
+        openrouter_key="test-key",
+        db=tmp_path / "router.db",
+        kev_url="http://kev:10203/v1/systemone",
+        kev_words=words,
+    )
+
+    local = build_local(settings)
+
+    assert local is not None
+    assert local.trained_version == "sha256:trained"
+
+
+def test_build_local_with_no_words_record_holds_no_version(tmp_path: Path):
+    settings = Settings(
+        token=TOKEN,
+        openrouter_key="test-key",
+        db=tmp_path / "router.db",
+        kev_url="http://kev:10203/v1/systemone",
+        kev_words=tmp_path / "missing.json",
+    )
+
+    local = build_local(settings)
+
+    assert local is not None
+    assert local.trained_version == ""
+
+
+def test_the_kev_words_setting_is_read(clean_env: pytest.MonkeyPatch, tmp_path: Path):
+    clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
+    clean_env.setenv("OPENROUTER_API_KEY", "test-key")
+    clean_env.setenv("VOICE_ROUTER_KEV_WORDS", str(tmp_path / "kev-words.json"))
+
+    settings = Settings.from_env()
+
+    assert settings.kev_words == tmp_path / "kev-words.json"

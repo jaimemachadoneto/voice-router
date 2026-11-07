@@ -31,6 +31,7 @@ class Settings:
     jev_model: str = DEFAULT_JEV_MODEL
     kev_url: str | None = None
     kev_model: str = DEFAULT_KEV_MODEL
+    kev_words: Path | None = None
     kev_limit: float = DEFAULT_KEV_LIMIT
     local_first: bool = False
 
@@ -55,6 +56,7 @@ class Settings:
             jev_model=os.environ.get("VOICE_ROUTER_JEV_MODEL", DEFAULT_JEV_MODEL),
             kev_url=os.environ.get("VOICE_ROUTER_KEV_URL") or None,
             kev_model=os.environ.get("VOICE_ROUTER_KEV_MODEL") or DEFAULT_KEV_MODEL,
+            kev_words=_kev_words(),
             kev_limit=_kev_limit(),
             local_first=_local_first(),
         )
@@ -108,6 +110,12 @@ def _kev_limit() -> float:
     if value <= 0:
         raise RuntimeError("VOICE_ROUTER_KEV_LIMIT must be greater than 0")
     return value
+
+
+def _kev_words() -> Path | None:
+    """The path of the Kev training word record, or None when it is not set."""
+    raw = os.environ.get("VOICE_ROUTER_KEV_WORDS", "")
+    return Path(raw) if raw else None
 
 
 def _local_first() -> bool:

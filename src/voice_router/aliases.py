@@ -4,6 +4,11 @@ The package file holds the general words: the domains, the actions and the
 question words. It holds no private data. A house file holds the rooms and the
 entities of one house. `load_word_data` reads both, and the general words come
 first.
+
+A house file has two parts. The generated part comes from the registry at each
+sync. The reviewed part holds the words that a person added, and a sync never
+rebuilds it. A legacy flat file has no parts, so its content is the reviewed
+part.
 """
 
 from __future__ import annotations
@@ -13,9 +18,12 @@ import json
 from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from voice_router.words import fold, has_phrase
+
+if TYPE_CHECKING:
+    from voice_router.house import House
 
 ACTION_OF = {"on": "turn_on", "off": "turn_off", "set": "set", "status": "status"}
 
@@ -66,13 +74,24 @@ def _join_actions(
     return out
 
 
+def _house_parts(house: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The generated and reviewed parts of a house file.
+
+    A legacy flat file has no part keys. Its content is the reviewed part, so
+    an old file keeps every word.
+    """
+    if "generated" in house or "reviewed" in house:
+        return house.get("generated", {}), house.get("reviewed", {})
+    return {}, house
+
+
 def load_word_data(house_path: Path | None) -> WordData:
     """The word data of the general layer and the house layer.
 
     The house file is optional. Its words join the general words, with no
-    duplicate, after them. The version is a digest of the bytes of both files,
-    so a change to either file gives a new version. A file that gives no key
-    gives an empty result for that key.
+    duplicate, in this order: general, generated, reviewed. The version is a
+    digest of the bytes of both files, so a change to either file gives a new
+    version. A file that gives no key gives an empty result for that key.
     """
     general_bytes = files("voice_router").joinpath("general_words.json").read_bytes()
     general: dict[str, Any] = json.loads(general_bytes)
@@ -81,15 +100,67 @@ def load_word_data(house_path: Path | None) -> WordData:
     if house_path is not None and house_path.exists():
         house_bytes = house_path.read_bytes()
         house = json.loads(house_bytes)
+    generated, reviewed = _house_parts(house)
     digest = hashlib.sha256(general_bytes + house_bytes).hexdigest()
     return WordData(
-        domains=_join_map(general.get("domains", {}), house.get("domains", {})),
-        actions=_join_actions(general.get("actions", {}), house.get("actions", {})),
-        questions=_join_map(general.get("questions", {}), house.get("questions", {})),
-        areas=_join_map(general.get("areas", {}), house.get("areas", {})),
-        entities=_join_map(general.get("entities", {}), house.get("entities", {})),
+        domains=_join_map(
+            _join_map(general.get("domains", {}), generated.get("domains", {})),
+            reviewed.get("domains", {}),
+        ),
+        actions=_join_actions(
+            _join_actions(general.get("actions", {}), generated.get("actions", {})),
+            reviewed.get("actions", {}),
+        ),
+        questions=_join_map(
+            _join_map(general.get("questions", {}), generated.get("questions", {})),
+            reviewed.get("questions", {}),
+        ),
+        areas=_join_map(
+            _join_map(general.get("areas", {}), generated.get("areas", {})),
+            reviewed.get("areas", {}),
+        ),
+        entities=_join_map(
+            _join_map(general.get("entities", {}), generated.get("entities", {})),
+            reviewed.get("entities", {}),
+        ),
         version="sha256:" + digest,
     )
+
+
+def write_generated(path: Path, house: House) -> None:
+    """Write the generated part of the house file, and keep the reviewed part.
+
+    The generated part holds the areas and the entity names of the registry,
+    and the domains of the general file. A legacy flat file moves under
+    `reviewed`, so its words stay. The JSON is stable: sorted keys, a 2-space
+    indent and a trailing newline. A second sync with the same registry writes
+    the same bytes.
+    """
+    data: dict[str, Any] = {}
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    if "generated" in data or "reviewed" in data:
+        reviewed = data.get("reviewed", {})
+    else:
+        reviewed = data
+    general: dict[str, Any] = json.loads(
+        files("voice_router").joinpath("general_words.json").read_bytes()
+    )
+    generated = {
+        "areas": {
+            area: list(dict.fromkeys([area, *words]))
+            for area, words in house.registry_areas.items()
+        },
+        "entities": {
+            entity_id: list(dict.fromkeys(words))
+            for entity_id, words in house.registry_entities.items()
+        },
+        "domains": {
+            name: list(words) for name, words in general.get("domains", {}).items()
+        },
+    }
+    out = {"generated": generated, "reviewed": reviewed}
+    path.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def actions_in(text: str, words: WordData) -> set[str]:

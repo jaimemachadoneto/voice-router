@@ -62,6 +62,19 @@ class Store:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def last_sync_at(self) -> str | None:
+        """The time of the newest sync, or None when the store is empty.
+
+        A restart reads this time as the start of the stale period of the local
+        route. The words version is not in the sync row, so the time of the
+        last sync is the best value that the store holds.
+        """
+        with self._lock:
+            row = self._db.execute(
+                "SELECT at FROM syncs ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+        return row[0] if row else None
+
     def add_record(self, record: dict[str, Any]) -> str:
         """Keep the request and its decision, and return the new record id."""
         record_id = uuid4().hex

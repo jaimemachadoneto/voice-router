@@ -7,7 +7,7 @@ selected the options of a command.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from voice_router.aliases import WordData
@@ -34,12 +34,18 @@ class FilterResult:
 
 @dataclass(frozen=True)
 class House:
-    """The entities and the areas of one sync, with the words of both layers."""
+    """The entities and the areas of one sync, with the words of both layers.
+
+    `registry_areas` and `registry_entities` hold the words that the registry
+    sent. The generated part of the house file takes them at each sync.
+    """
 
     entities: dict[str, Entity]
     registry_hash: str
     words: WordData
     area_aliases: dict[str, list[str]]
+    registry_areas: dict[str, list[str]] = field(default_factory=dict)
+    registry_entities: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def from_sync(cls, payload: dict[str, Any], words: WordData) -> House:
@@ -51,9 +57,16 @@ class House:
         language names the same area.
         """
         entities = {}
+        registry_areas = {
+            key: list(values) for key, values in payload.get("areas", {}).items()
+        }
+        registry_entities = {}
         for item in payload.get("entities", ()):
             entity_id = item["entity_id"]
             aliases = list(item.get("aliases", ()))
+            registry_entities[entity_id] = list(dict.fromkeys([item["name"], *aliases]))
+            if item.get("area"):
+                registry_areas.setdefault(item["area"], [])
             aliases.extend(
                 word
                 for word in words.entities.get(entity_id, ())
@@ -78,6 +91,8 @@ class House:
             registry_hash=payload.get("registry_hash", ""),
             words=words,
             area_aliases=area_aliases,
+            registry_areas=registry_areas,
+            registry_entities=registry_entities,
         )
 
     def filter(self, text: str, room: str | None = None) -> FilterResult:

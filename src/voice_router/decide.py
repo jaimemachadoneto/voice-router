@@ -37,8 +37,10 @@ class Decision:
 
     `act` is True only when `entity_ids` holds the devices of the action. Every
     decision that does not act has no device and no action. `reason` tells why
-    the router did not act, and `source` tells which layer decided. `local`
-    holds the Kev answer when the local route decided.
+    the router did not act, or why the local route did not act (`stale`).
+    `source` tells which layer decided. `local` holds the Kev answer when the
+    local route decided. `stale_since` holds the time of the sync that changed
+    the words version, when the local route is stale.
     """
 
     route: str
@@ -53,6 +55,7 @@ class Decision:
     filter_source: str
     jev: dict | None
     local: dict | None = None
+    stale_since: str | None = None
 
 
 def _questions(f: FilterResult, house: House) -> list[Question]:
@@ -123,6 +126,7 @@ async def _offline(
     house: House,
     error: str,
     local_task: asyncio.Task | None = None,
+    stale: bool = False,
 ) -> Decision:
     """The gate for a Jev error or a late answer: the words and Kev decide.
 
@@ -131,7 +135,7 @@ async def _offline(
     offered devices, and a weak or outside answer does not act. Without a local
     task, the set does not act, because the words do not choose between the
     devices. A question word or two action words make the set ambiguous, so the
-    router does not act.
+    router does not act. A stale local route does not act either.
     """
     options = f.options
     found = actions_in(text, house.words)
@@ -162,6 +166,10 @@ async def _offline(
         )
     if local_task is None:
         return _no_act(f, DEVICE_COMMAND, "words", "offline_gate", {}, {"error": error})
+    if stale:
+        # The local route is stale, so it does not act. The shadow keeps its
+        # answer after the reply.
+        return _no_act(f, DEVICE_COMMAND, "words", "stale", {}, {"error": error})
     answer = await asyncio.shield(local_task)
     choice = answer.get("choice")
     if "error" in answer or (choice not in options and choice != NONE):
@@ -191,7 +199,7 @@ async def _offline(
     )
 
 
-async def decide(
+async def _decide(
     text: str,
     room: str | None,
     house: House,
@@ -199,6 +207,7 @@ async def decide(
     limit: float = 0.8,
     local_task: asyncio.Task | None = None,
     local_first: bool = False,
+    stale: bool = False,
 ) -> Decision:
     """The route, the action and the devices that the router answers.
 
@@ -213,7 +222,7 @@ async def decide(
     `local_task` is the Kev device question. The offline gate uses it when Jev
     fails or answers too late. When `local_first` is true, the local answer also
     decides a device command with two or more options, and the Jev device answer
-    is the fallback.
+    is the fallback. A stale local route does not act.
     """
     f = house.filter(text, room)
     state = {"command": text, "speaker_room": room}
@@ -228,6 +237,7 @@ async def decide(
             house,
             "timeout" if isinstance(err, TimeoutError) else str(err),
             local_task,
+            stale,
         )
 
     record = _jev_record(answers)
@@ -301,3 +311,44 @@ async def decide(
         filter_source=f.source,
         jev=record,
     )
+
+
+async def decide(
+    text: str,
+    room: str | None,
+    house: House,
+    jev: Jev,
+    limit: float = 0.8,
+    local_task: asyncio.Task | None = None,
+    local_first: bool = False,
+    trained_version: str = "",
+    stale_since: str | None = None,
+) -> Decision:
+    """The route, the action and the devices that the router answers.
+
+    `trained_version` is the words version that the Kev training used. When it
+    is not empty and differs from the version of the house, the local route is
+    stale. A stale local route still answers the shadow, but it does not act.
+    The decision keeps the Jev answer and holds `reason="stale"` and
+    `stale_since`. An empty version means that no training record exists, so
+    the local route is not stale.
+    """
+    stale = (
+        bool(trained_version)
+        and trained_version != house.words.version
+        and local_task is not None
+    )
+    decision = await _decide(
+        text,
+        room,
+        house,
+        jev,
+        limit,
+        local_task=local_task,
+        local_first=local_first and not stale,
+        stale=stale,
+    )
+    if stale and decision.route == DEVICE_COMMAND:
+        decision.reason = "stale"
+        decision.stale_since = stale_since
+    return decision

@@ -14,12 +14,13 @@ from __future__ import annotations
 import asyncio
 import hmac
 from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from voice_router.aliases import load_word_data
+from voice_router.aliases import load_word_data, write_generated
 from voice_router.decide import DEVICE_COMMAND, decide
 from voice_router.house import House
 from voice_router.jev import Jev
@@ -142,6 +143,8 @@ def create_app(
     words = load_word_data(settings.house_words)
     sync = store.last_sync()
     app.state.house = House.from_sync(sync, words) if sync is not None else None
+    # A restart keeps the start of the stale period of the local route.
+    app.state.stale_since = store.last_sync_at()
 
     def check_token(authorization: str | None = Header(default=None)) -> None:
         """Refuse a call that does not carry the token of the settings."""
@@ -153,9 +156,21 @@ def create_app(
 
     @app.post("/sync")
     def sync_house(body: SyncBody, _: None = Depends(check_token)) -> dict[str, Any]:
-        """Replace the house of the router and keep the payload."""
+        """Replace the house of the router and keep the payload.
+
+        The generated part of the house words comes from this registry. The
+        words load again after the write, so the alias version holds the new
+        generated part. A changed version starts the stale period of the local
+        route.
+        """
         payload = body.model_dump()
-        house = House.from_sync(payload, load_word_data(settings.house_words))
+        before = load_word_data(settings.house_words)
+        house = House.from_sync(payload, before)
+        if settings.house_words is not None:
+            write_generated(settings.house_words, house)
+            house = House.from_sync(payload, load_word_data(settings.house_words))
+            if house.words.version != before.version:
+                app.state.stale_since = datetime.now(UTC).isoformat()
         store.save_sync(payload)
         app.state.house = house
         return {
@@ -187,6 +202,10 @@ def create_app(
             settings.jev_limit,
             local_task=local_task,
             local_first=settings.local_first,
+            trained_version=(
+                getattr(local, "trained_version", "") if local is not None else ""
+            ),
+            stale_since=app.state.stale_since,
         )
         decision_dict = asdict(decision)
         if decision_dict["local"] is None:
