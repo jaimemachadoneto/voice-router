@@ -115,6 +115,11 @@ class FakeJev(Jev):
         return answers
 
 
+async def _answer(answer: dict) -> dict:
+    """A finished local task with one answer."""
+    return answer
+
+
 async def test_a_device_command_acts_on_the_chosen_device(house: House):
     jev = FakeJev(
         device="light.office_lamp",
@@ -303,3 +308,158 @@ async def test_offline_text_with_no_device_is_offline(house: House):
     decision = await decide("what is the capital of Peru", None, house, jev)
     assert decision.route == "offline"
     assert decision.act is False
+
+
+async def test_offline_two_options_act_with_the_local_answer(house: House):
+    jev = FakeJev(error=JevError("no answer"))
+    answer = {
+        "choice": "light.office_lamp",
+        "probabilities": {
+            "light.office_lamp": 0.9,
+            "light.office_ceiling": 0.1,
+            "none": 0.0,
+        },
+        "seconds": 0.1,
+        "cost": 0.0,
+    }
+    task = asyncio.create_task(_answer(answer))
+
+    decision = await decide(
+        "turn off the office light", None, house, jev, local_task=task
+    )
+
+    assert decision.act is True
+    assert decision.action == "turn_off"
+    assert decision.source == "local"
+    assert decision.entity_ids == ["light.office_lamp"]
+    assert decision.local is not None
+    assert decision.local["choice"] == "light.office_lamp"
+
+
+async def test_offline_a_weak_local_answer_does_not_act(house: House):
+    jev = FakeJev(error=JevError("no answer"))
+    answer = {
+        "choice": "none",
+        "probabilities": {"none": 0.9, "light.office_lamp": 0.05},
+    }
+    task = asyncio.create_task(_answer(answer))
+
+    decision = await decide(
+        "turn off the office light", None, house, jev, local_task=task
+    )
+
+    assert decision.act is False
+    assert decision.reason == "low_confidence"
+    assert decision.entity_ids == []
+    assert decision.local == answer
+
+
+async def test_offline_a_local_choice_outside_the_options_does_not_act(house: House):
+    jev = FakeJev(error=JevError("no answer"))
+    answer = {
+        "choice": "lock.front",
+        "probabilities": {
+            "lock.front": 0.99,
+            "light.office_lamp": 0.003,
+            "light.office_ceiling": 0.002,
+            "none": 0.005,
+        },
+    }
+    task = asyncio.create_task(_answer(answer))
+
+    decision = await decide(
+        "turn off the office light", None, house, jev, local_task=task
+    )
+
+    assert decision.act is False
+    assert decision.reason == "low_confidence"
+    assert decision.entity_ids == []
+    assert decision.local == answer
+
+
+async def test_offline_without_a_local_task_keeps_the_phase_one_behavior(house: House):
+    jev = FakeJev(error=JevError("no answer"))
+
+    decision = await decide("turn off the office light", None, house, jev)
+
+    assert decision.act is False
+    assert decision.reason == "offline_gate"
+    assert decision.local is None
+
+
+async def test_local_first_acts_on_the_local_device_answer(house: House):
+    jev = FakeJev(
+        route="device_command",
+        action="turn_off",
+        device="light.office_ceiling",
+        probabilities={
+            "light.office_ceiling": 0.8,
+            "light.office_lamp": 0.15,
+            "none": 0.05,
+        },
+    )
+    answer = {
+        "choice": "light.office_lamp",
+        "probabilities": {
+            "light.office_lamp": 0.9,
+            "light.office_ceiling": 0.1,
+            "none": 0.0,
+        },
+        "seconds": 0.1,
+        "cost": 0.0,
+    }
+    task = asyncio.create_task(_answer(answer))
+
+    decision = await decide(
+        "turn off the office light",
+        None,
+        house,
+        jev,
+        local_task=task,
+        local_first=True,
+    )
+
+    assert decision.act is True
+    assert decision.action == "turn_off"
+    assert decision.source == "local"
+    assert decision.entity_ids == ["light.office_lamp"]
+    assert decision.local == answer
+
+
+async def test_local_first_off_keeps_the_jev_device_answer(house: House):
+    jev = FakeJev(
+        route="device_command",
+        action="turn_off",
+        device="light.office_ceiling",
+        probabilities={
+            "light.office_ceiling": 0.8,
+            "light.office_lamp": 0.15,
+            "none": 0.05,
+        },
+    )
+    answer = {
+        "choice": "light.office_lamp",
+        "probabilities": {
+            "light.office_lamp": 0.9,
+            "light.office_ceiling": 0.1,
+            "none": 0.0,
+        },
+        "seconds": 0.1,
+        "cost": 0.0,
+    }
+    task = asyncio.create_task(_answer(answer))
+
+    decision = await decide(
+        "turn off the office light",
+        None,
+        house,
+        jev,
+        local_task=task,
+        local_first=False,
+    )
+
+    assert decision.act is True
+    assert decision.source == "jev"
+    assert decision.entity_ids == ["light.office_ceiling"]
+    assert decision.local is None
+    assert await task == answer

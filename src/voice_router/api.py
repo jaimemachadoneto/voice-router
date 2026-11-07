@@ -162,8 +162,19 @@ def create_app(
                     local, house, f.options, body.text, body.room, settings.kev_limit
                 )
             )
-        decision = await decide(body.text, body.room, house, jev, settings.jev_limit)
+        decision = await decide(
+            body.text,
+            body.room,
+            house,
+            jev,
+            settings.jev_limit,
+            local_task=local_task,
+            local_first=settings.local_first,
+        )
         decision_dict = asdict(decision)
+        if decision_dict["local"] is None:
+            # A phase 1 record holds no local key. The shadow adds it.
+            del decision_dict["local"]
         decision_dict["alias_version"] = house.words.version
         decision_dict["registry_hash"] = house.registry_hash
         record_id = store.add_record(

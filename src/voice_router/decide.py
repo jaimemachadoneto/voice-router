@@ -37,7 +37,8 @@ class Decision:
 
     `act` is True only when `entity_ids` holds the devices of the action. Every
     decision that does not act has no device and no action. `reason` tells why
-    the router did not act, and `source` tells which layer decided.
+    the router did not act, and `source` tells which layer decided. `local`
+    holds the Kev answer when the local route decided.
     """
 
     route: str
@@ -51,6 +52,7 @@ class Decision:
     options: list[str] | None
     filter_source: str
     jev: dict | None
+    local: dict | None = None
 
 
 def _questions(f: FilterResult, house: House) -> list[Question]:
@@ -96,6 +98,7 @@ def _no_act(
     reason: str | None,
     confidence: dict[str, float],
     jev: dict | None,
+    local: dict | None = None,
 ) -> Decision:
     """A decision with no device and no action."""
     return Decision(
@@ -110,16 +113,25 @@ def _no_act(
         options=f.options,
         filter_source=f.source,
         jev=jev,
+        local=local,
     )
 
 
-def _offline(f: FilterResult, text: str, house: House, error: str) -> Decision:
+async def _offline(
+    f: FilterResult,
+    text: str,
+    house: House,
+    error: str,
+    local_task: asyncio.Task | None = None,
+) -> Decision:
     """The gate for a Jev error or a late answer: the words alone decide.
 
     The words may act on one device only. A set of two or three devices passes
-    the gate but does not act, because the words do not choose between them. A
-    question word or two action words make the set ambiguous, so the router
-    does not act.
+    the gate and asks Kev, when a local task exists. Kev acts only on one of the
+    offered devices, and a weak or outside answer does not act. Without a local
+    task, the set does not act, because the words do not choose between the
+    devices. A question word or two action words make the set ambiguous, so the
+    router does not act.
     """
     options = f.options
     found = actions_in(text, house.words)
@@ -148,11 +160,45 @@ def _offline(f: FilterResult, text: str, house: House, error: str) -> Decision:
             filter_source=f.source,
             jev={"error": error},
         )
-    return _no_act(f, DEVICE_COMMAND, "words", "offline_gate", {}, {"error": error})
+    if local_task is None:
+        return _no_act(f, DEVICE_COMMAND, "words", "offline_gate", {}, {"error": error})
+    answer = await asyncio.shield(local_task)
+    choice = answer.get("choice")
+    if choice not in options and choice != NONE:
+        # A choice outside the offer is not one of the devices of the command.
+        return _no_act(
+            f, DEVICE_COMMAND, "local", "low_confidence", {}, {"error": error}, answer
+        )
+    chosen = choose(options, answer.get("probabilities"))
+    if not chosen:
+        return _no_act(
+            f, DEVICE_COMMAND, "local", "low_confidence", {}, {"error": error}, answer
+        )
+    action, value = resolve(next(iter(found)), text, house.entities[chosen[0]].domain)
+    return Decision(
+        route=DEVICE_COMMAND,
+        act=True,
+        action=action,
+        entity_ids=chosen,
+        value=asdict(value) if value is not None else None,
+        source="local",
+        confidence={},
+        reason=None,
+        options=f.options,
+        filter_source=f.source,
+        jev={"error": error},
+        local=answer,
+    )
 
 
 async def decide(
-    text: str, room: str | None, house: House, jev: Jev, limit: float = 0.8
+    text: str,
+    room: str | None,
+    house: House,
+    jev: Jev,
+    limit: float = 0.8,
+    local_task: asyncio.Task | None = None,
+    local_first: bool = False,
 ) -> Decision:
     """The route, the action and the devices that the router answers.
 
@@ -163,6 +209,11 @@ async def decide(
     A device choice acts only when it is one of the offered devices. This check
     stops a choice outside the offer, which the probabilities alone would let
     act. A route other than `device_command` never acts.
+
+    `local_task` is the Kev device question. The offline gate uses it when Jev
+    fails or answers too late. When `local_first` is true, the local answer also
+    decides a device command with two or more options, and the Jev device answer
+    is the fallback.
     """
     f = house.filter(text, room)
     state = {"command": text, "speaker_room": room}
@@ -171,8 +222,12 @@ async def decide(
             jev.choices(state, _questions(f, house)), timeout=limit
         )
     except (JevError, TimeoutError) as err:
-        return _offline(
-            f, text, house, "timeout" if isinstance(err, TimeoutError) else str(err)
+        return await _offline(
+            f,
+            text,
+            house,
+            "timeout" if isinstance(err, TimeoutError) else str(err),
+            local_task,
         )
 
     record = _jev_record(answers)
@@ -197,6 +252,34 @@ async def decide(
     if device is not None and device.choice not in options and device.choice != NONE:
         # A choice outside the offer is not one of the devices of the command.
         return _no_act(f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record)
+    if local_first and local_task is not None and len(options) >= 2:
+        answer = await asyncio.shield(local_task)
+        choice = answer.get("choice")
+        local_chosen = (
+            choose(options, answer.get("probabilities"))
+            if choice in options or choice == NONE
+            else []
+        )
+        if local_chosen:
+            # The switch replaces only the device. The action stays the one
+            # that Jev answered, and the Jev answers stay in the record.
+            action, value = resolve(
+                answers["action"].choice, text, house.entities[local_chosen[0]].domain
+            )
+            return Decision(
+                route=DEVICE_COMMAND,
+                act=True,
+                action=action,
+                entity_ids=local_chosen,
+                value=asdict(value) if value is not None else None,
+                source="local",
+                confidence=confidence,
+                reason=None,
+                options=f.options,
+                filter_source=f.source,
+                jev=record,
+                local=answer,
+            )
     chosen = choose(options, device.probabilities if device is not None else None)
     if not chosen:
         return _no_act(f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record)
