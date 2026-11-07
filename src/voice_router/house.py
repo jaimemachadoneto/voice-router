@@ -125,6 +125,40 @@ class House:
             return FilterResult(options, "default_room")
         return FilterResult(options, "domain")
 
+    def filter_shadow(self, text: str, room: str | None = None) -> FilterResult:
+        """The filter result with the shadow words added to the entity words.
+
+        A shadow word names its entity as an alias does, so the options of the
+        shadow ask hold the entity before the word is active. The acting filter
+        never reads the shadow words.
+        """
+        entity_list = list(self.entities.values())
+        areas = area_words(entity_list, self.area_aliases)
+        shadow = self.words.shadow_entities
+        entity_words = {}
+        for entity in entity_list:
+            words = list(entity.aliases)
+            words.extend(
+                word for word in shadow.get(entity.entity_id, ()) if word not in words
+            )
+            if words:
+                entity_words[entity.entity_id] = words
+        options = word_filter(
+            text,
+            entity_list,
+            self.words.domains,
+            areas,
+            entity_words,
+            room,
+        )
+        if options is None:
+            return FilterResult(None, "none")
+        if _named_entities(text, entity_list, entity_words, self.words.domains):
+            return FilterResult(options, "entity_word")
+        if room is not None and not _named_areas(text, areas):
+            return FilterResult(options, "default_room")
+        return FilterResult(options, "domain")
+
     def filter_with_word(
         self, text: str, room: str | None, entity_id: str, word: str
     ) -> FilterResult:

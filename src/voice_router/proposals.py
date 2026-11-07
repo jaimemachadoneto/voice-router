@@ -14,12 +14,16 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
-from voice_router.aliases import WordData
+from voice_router.aliases import WordData, promote_words
 from voice_router.house import House
 from voice_router.store import Store
 from voice_router.words import NONE, fold
+
+# The agreeing records that make a shadow word active.
+SHADOW_AGREEMENTS = 20
 
 # The short words that no proposal needs. A word of one letter goes too.
 STOP_WORDS = frozenset(
@@ -261,6 +265,9 @@ def record_proposal(store: Store, house: House, record: dict) -> dict | None:
     if found is None:
         return None
     word, entity_id = found
+    if store.is_refused(fold(word), entity_id):
+        # A refused word does not come back for the same word and entity.
+        return None
     if entity_id not in house.entities:
         _unplaceable(store, record)
         return None
@@ -285,7 +292,58 @@ def record_proposal(store: Store, house: House, record: dict) -> dict | None:
         "before_count": before,
         "after_count": after,
     }
-    return _with_change(store.merge_proposal(proposal, text))
+    merged = store.merge_proposal(proposal, text)
+    if merged.get("status") == "refused":
+        # A refusal that another writer stored during this call wins.
+        return None
+    return _with_change(merged)
+
+
+def _answers_agree(decision: dict) -> bool:
+    """True when the Kev choice is the Jev device choice."""
+    local = decision.get("local") or {}
+    choice = local.get("choice")
+    if not isinstance(choice, str) or choice == NONE:
+        return False
+    device = (decision.get("jev") or {}).get("device") or {}
+    return device.get("choice") == choice
+
+
+def advance_shadow(
+    store: Store, house: House, house_words: Path | None, record: dict
+) -> bool:
+    """Count one record for the shadow words that it used, and promote at 20.
+
+    The count moves only when Kev agrees with Jev and the result holds no
+    repeat or correction. A repeat or a correction sets the count of the word
+    to zero. At 20 agreeing records the word leaves the shadow part and joins
+    the active part in one write. False means that no word changed the file.
+    """
+    if house_words is None:
+        return False
+    decision = record.get("decision") or {}
+    applied = decision.get("shadow_words")
+    if not isinstance(applied, list) or not applied:
+        return False
+    applied_keys = {fold(word) for word in applied if isinstance(word, str)}
+    result = record.get("result") or {}
+    reset = bool(result.get("repeat") or result.get("correction"))
+    agree = _answers_agree(decision)
+    promotions: list[tuple[str, str]] = []
+    for entity_id, words in list(house.words.shadow_entities.items()):
+        for word in words:
+            if fold(word) not in applied_keys:
+                continue
+            key = fold(word)
+            if reset:
+                store.reset_word_agreement(key, entity_id)
+            elif (
+                agree and store.add_word_agreement(key, entity_id) >= SHADOW_AGREEMENTS
+            ):
+                promotions.append((entity_id, word))
+    if not promotions:
+        return False
+    return promote_words(house_words, promotions)
 
 
 def list_proposals(store: Store, status: str = "proposed") -> list[dict]:

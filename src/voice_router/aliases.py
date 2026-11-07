@@ -51,6 +51,7 @@ class WordData:
     questions: dict[str, list[str]] = field(default_factory=dict)
     areas: dict[str, list[str]] = field(default_factory=dict)
     entities: dict[str, list[str]] = field(default_factory=dict)
+    shadow_entities: dict[str, list[str]] = field(default_factory=dict)
     version: str = ""
 
 
@@ -137,6 +138,10 @@ def load_word_data(house_path: Path | None) -> WordData:
             _join_map(general.get("entities", {}), generated.get("entities", {})),
             reviewed.get("entities", {}),
         ),
+        shadow_entities={
+            entity_id: list(words)
+            for entity_id, words in reviewed.get("shadow", {}).items()
+        },
         version="sha256:" + digest,
     )
 
@@ -207,6 +212,69 @@ def write_generated(path: Path, house: House) -> None:
         }
         out = {"generated": generated, "reviewed": reviewed}
         _write_words(path, json.dumps(out, indent=2, sort_keys=True) + "\n")
+
+
+def _reviewed(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The whole house file and its reviewed part.
+
+    A legacy flat file has no part keys, so its content is the reviewed part.
+    """
+    data: dict[str, Any] = {}
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    if "generated" in data or "reviewed" in data:
+        return data, data.get("reviewed", {})
+    return data, data
+
+
+def _write_reviewed(path: Path, data: dict[str, Any], reviewed: dict[str, Any]) -> None:
+    """Write the reviewed part of a house file, and keep the other keys."""
+    if "generated" in data or "reviewed" in data:
+        out = {**data, "reviewed": reviewed}
+    else:
+        out = {"reviewed": reviewed}
+    _write_words(path, json.dumps(out, indent=2, sort_keys=True) + "\n")
+
+
+def add_shadow_word(path: Path, entity_id: str, word: str) -> None:
+    """Add one word to the shadow words of an entity in the reviewed part.
+
+    A shadow word changes only the options that Kev reads. The list has no
+    duplicate and stays sorted. The function holds `ALIASES_LOCK` across the
+    whole read-modify-write, and the write is atomic.
+    """
+    with ALIASES_LOCK:
+        data, reviewed = _reviewed(path)
+        shadow = reviewed.setdefault("shadow", {})
+        shadow[entity_id] = sorted({*shadow.get(entity_id, []), word})
+        _write_reviewed(path, data, reviewed)
+
+
+def promote_words(path: Path, words: list[tuple[str, str]]) -> bool:
+    """Move words from the shadow part to the active part of the reviewed words.
+
+    Each pair holds an entity id and a word. The word leaves the shadow list of
+    the entity and joins the active list, with no duplicate and sorted. The
+    function writes the file once, under `ALIASES_LOCK`, when a pair changes it.
+    False means that the file stays as it was.
+    """
+    changed = False
+    with ALIASES_LOCK:
+        data, reviewed = _reviewed(path)
+        shadow = reviewed.setdefault("shadow", {})
+        entities = reviewed.setdefault("entities", {})
+        for entity_id, word in words:
+            current = shadow.get(entity_id, [])
+            if word in current:
+                shadow[entity_id] = [item for item in current if item != word]
+                changed = True
+            active = entities.setdefault(entity_id, [])
+            if word not in active:
+                entities[entity_id] = sorted({*active, word})
+                changed = True
+        if changed:
+            _write_reviewed(path, data, reviewed)
+    return changed
 
 
 def actions_in(text: str, words: WordData) -> set[str]:

@@ -31,8 +31,20 @@ _SCHEMA = (
         "CREATE TABLE IF NOT EXISTS proposals("
         "id TEXT PRIMARY KEY, word TEXT, word_key TEXT, meaning TEXT, domain TEXT,"
         " entity_id TEXT, at TEXT, status TEXT, commands TEXT,"
-        " before_count INTEGER, after_count INTEGER)"
+        " before_count INTEGER, after_count INTEGER,"
+        " decided_at TEXT, decided_by TEXT)"
     ),
+    (
+        "CREATE TABLE IF NOT EXISTS word_progress("
+        "word_key TEXT, entity_id TEXT, agreements INTEGER NOT NULL DEFAULT 0,"
+        " PRIMARY KEY(word_key, entity_id))"
+    ),
+)
+
+# The columns of a proposal row, in the order that `_proposal` reads them.
+_PROPOSAL_COLUMNS = (
+    "id, word, meaning, domain, entity_id, at, status, commands,"
+    " before_count, after_count, decided_at, decided_by"
 )
 
 # The most commands that one proposal keeps.
@@ -52,6 +64,8 @@ def _proposal(row: tuple) -> dict[str, Any]:
         "commands": json.loads(row[7]) or [],
         "before_count": row[8],
         "after_count": row[9],
+        "decided_at": row[10],
+        "decided_by": row[11],
     }
 
 
@@ -106,6 +120,10 @@ def _migrate(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE proposals ADD COLUMN after_count INTEGER")
     if "word_key" not in proposal_columns:
         db.execute("ALTER TABLE proposals ADD COLUMN word_key TEXT")
+    if "decided_at" not in proposal_columns:
+        db.execute("ALTER TABLE proposals ADD COLUMN decided_at TEXT")
+    if "decided_by" not in proposal_columns:
+        db.execute("ALTER TABLE proposals ADD COLUMN decided_by TEXT")
     # A row of an old version has no folded key, so fill it before the dedupe.
     rows = db.execute(
         "SELECT id, word FROM proposals WHERE word_key IS NULL"
@@ -325,22 +343,21 @@ class Store:
         """Insert a proposal, or join a command to the row of the same word.
 
         The lookup key is the folded word, so two spellings of one word give
-        one row. The row keeps the display spelling of the first command. The
+        one row. The row keeps the display spelling of the first command. A
+        refused row stays as it is: a refused word does not come back. The
         find, the insert and the command join run under one lock. A UNIQUE
         index stops a second row after a race.
         """
         key = fold(proposal["word"])
-        columns = (
-            "id, word, meaning, domain, entity_id, at, status, commands,"
-            " before_count, after_count"
-        )
         with self._lock:
             row = self._db.execute(
-                f"SELECT {columns} FROM proposals"
+                f"SELECT {_PROPOSAL_COLUMNS} FROM proposals"
                 " WHERE word_key = ? AND entity_id = ? ORDER BY rowid LIMIT 1",
                 (key, proposal["entity_id"]),
             ).fetchone()
             if row is not None:
+                if row[6] == "refused":
+                    return _proposal(row)
                 commands = json.loads(row[7]) or []
                 if text not in commands and len(commands) < PROPOSAL_COMMANDS:
                     commands.append(text)
@@ -349,7 +366,14 @@ class Store:
                         (json.dumps(commands), row[0]),
                     )
                     self._db.commit()
-                    row = (*row[:7], json.dumps(commands), row[8], row[9])
+                    row = (
+                        *row[:7],
+                        json.dumps(commands),
+                        row[8],
+                        row[9],
+                        row[10],
+                        row[11],
+                    )
                 return _proposal(row)
             commands = list(proposal.get("commands") or [text])
             self._db.execute(
@@ -384,6 +408,8 @@ class Store:
                 json.dumps(commands),
                 proposal["before_count"],
                 proposal["after_count"],
+                None,
+                None,
             )
         )
 
@@ -391,9 +417,106 @@ class Store:
         """The proposals with one status, oldest first."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT id, word, meaning, domain, entity_id, at, status, commands,"
-                " before_count, after_count"
+                f"SELECT {_PROPOSAL_COLUMNS}"
                 " FROM proposals WHERE status = ? ORDER BY rowid",
                 (status,),
             ).fetchall()
         return [_proposal(row) for row in rows]
+
+    def get_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        """The proposal with one id, or None when the id is unknown."""
+        with self._lock:
+            row = self._db.execute(
+                f"SELECT {_PROPOSAL_COLUMNS} FROM proposals WHERE id = ?",
+                (proposal_id,),
+            ).fetchone()
+        return _proposal(row) if row else None
+
+    def count_proposals(self, status: str) -> int:
+        """The number of proposals with one status."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM proposals WHERE status = ?", (status,)
+            ).fetchone()
+        return row[0] if row else 0
+
+    def is_refused(self, word_key: str, entity_id: str) -> bool:
+        """True when a refused proposal holds this folded word and entity."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM proposals"
+                " WHERE word_key = ? AND entity_id = ? AND status = 'refused'"
+                " LIMIT 1",
+                (word_key, entity_id),
+            ).fetchone()
+        return row is not None
+
+    def decide_proposal(self, proposal_id: str, status: str, by: str, at: str) -> bool:
+        """Record a decision on a proposed row. False means that it changed no row.
+
+        The update touches only a row that still waits for a decision, so two
+        decisions of one proposal do not both apply.
+        """
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE proposals SET status = ?, decided_at = ?, decided_by = ?"
+                " WHERE id = ? AND status = 'proposed'",
+                (status, at, by, proposal_id),
+            )
+            self._db.commit()
+            return cursor.rowcount > 0
+
+    def word_agreement(self, word_key: str, entity_id: str) -> int:
+        """The number of agreeing records of one shadow word, or 0."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT agreements FROM word_progress"
+                " WHERE word_key = ? AND entity_id = ?",
+                (word_key, entity_id),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def add_word_agreement(self, word_key: str, entity_id: str) -> int:
+        """Add one agreeing record to a shadow word, and return the count."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT agreements FROM word_progress"
+                " WHERE word_key = ? AND entity_id = ?",
+                (word_key, entity_id),
+            ).fetchone()
+            value = (int(row[0] or 0) if row else 0) + 1
+            if row is None:
+                self._db.execute(
+                    "INSERT INTO word_progress(word_key, entity_id, agreements)"
+                    " VALUES (?, ?, ?)",
+                    (word_key, entity_id, value),
+                )
+            else:
+                self._db.execute(
+                    "UPDATE word_progress SET agreements = ?"
+                    " WHERE word_key = ? AND entity_id = ?",
+                    (value, word_key, entity_id),
+                )
+            self._db.commit()
+        return value
+
+    def reset_word_agreement(self, word_key: str, entity_id: str) -> None:
+        """Set the count of a shadow word to zero."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM word_progress WHERE word_key = ? AND entity_id = ?",
+                (word_key, entity_id),
+            ).fetchone()
+            if row is None:
+                self._db.execute(
+                    "INSERT INTO word_progress(word_key, entity_id, agreements)"
+                    " VALUES (?, ?, 0)",
+                    (word_key, entity_id),
+                )
+            else:
+                self._db.execute(
+                    "UPDATE word_progress SET agreements = 0"
+                    " WHERE word_key = ? AND entity_id = ?",
+                    (word_key, entity_id),
+                )
+            self._db.commit()

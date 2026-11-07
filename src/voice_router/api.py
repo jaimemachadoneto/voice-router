@@ -14,13 +14,15 @@ from __future__ import annotations
 import asyncio
 import hmac
 from dataclasses import asdict
-from typing import Any
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from voice_router import proposals
-from voice_router.aliases import load_word_data, write_generated
+from voice_router.aliases import add_shadow_word, load_word_data, write_generated
 from voice_router.decide import DEVICE_COMMAND, decide
 from voice_router.house import House
 from voice_router.jev import Jev
@@ -68,6 +70,14 @@ class LogBody(BaseModel):
 
     record_id: str
     result: dict[str, Any]
+
+
+class ProposalBody(BaseModel):
+    """The decision of one person on a proposed word."""
+
+    id: str
+    decision: Literal["confirm", "refuse"]
+    by: str
 
 
 def _consume(task: asyncio.Task) -> None:
@@ -143,6 +153,25 @@ def _record_proposal(store: Store, record_id: str, house: House | None) -> None:
         pass
 
 
+def _advance_shadow(
+    store: Store, house: House | None, house_words: Path | None, record_id: str
+) -> bool:
+    """Count the shadow words of a record, and promote a word at 20.
+
+    The count is a side note of the log. No error may fail the log of an
+    action, so every error is ignored. True means that the word file changed.
+    """
+    if house is None:
+        return False
+    try:
+        record = store.record(record_id)
+        if record is None:
+            return False
+        return proposals.advance_shadow(store, house, house_words, record)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def app_from_env() -> FastAPI:
     """Build the app from the process environment, for the container image.
 
@@ -171,6 +200,13 @@ def create_app(
     # store keeps the words version of each sync, so the first sync of the
     # current version gives the time.
     app.state.stale_since = store.first_sync_at(words.version)
+
+    def reload_house() -> None:
+        """Load the house again after a reviewed word changed."""
+        payload = store.last_sync()
+        if payload is None:
+            return
+        app.state.house = House.from_sync(payload, load_word_data(settings.house_words))
 
     def check_token(authorization: str | None = Header(default=None)) -> None:
         """Refuse a call that does not carry the token of the settings."""
@@ -209,14 +245,24 @@ def create_app(
         house = app.state.house
         if house is None:
             raise HTTPException(status_code=503, detail="no sync")
-        f = house.filter(body.text, body.room)
+        shadow = house.filter_shadow(body.text, body.room)
         local_task = None
-        if local is not None and f.options is not None and len(f.options) >= 2:
-            # Kev runs beside Jev. The shadow waits a short grace only, so a
-            # slow or down Kev server changes no reply.
+        if (
+            local is not None
+            and shadow.options is not None
+            and len(shadow.options) >= 2
+        ):
+            # Kev reads the shadow options, which hold the confirmed words.
+            # The shadow waits a short grace only, so a slow or down Kev
+            # server changes no reply.
             local_task = asyncio.create_task(
                 ask_local(
-                    local, house, f.options, body.text, body.room, settings.kev_limit
+                    local,
+                    house,
+                    shadow.options,
+                    body.text,
+                    body.room,
+                    settings.kev_limit,
                 )
             )
         decision = await decide(
@@ -255,12 +301,57 @@ def create_app(
 
         A later mark joins the result and does not replace it, so a repeat or
         a correction keeps the status of the action. A command whose filter
-        found no word gives a proposal too.
+        found no word gives a proposal too. A shadow word counts the agreement
+        of Kev with Jev, and it becomes active at 20 records.
         """
         if not store.merge_result(body.record_id, body.result):
             raise HTTPException(status_code=404, detail="unknown record")
         _record_proposal(store, body.record_id, app.state.house)
+        if _advance_shadow(
+            store, app.state.house, settings.house_words, body.record_id
+        ):
+            reload_house()
         return Response(status_code=204)
+
+    @app.get("/proposals")
+    def get_proposals(_: None = Depends(check_token)) -> dict[str, Any]:
+        """Return the proposals that wait for a person, and the refused count."""
+        return {
+            "proposals": proposals.list_proposals(store, "proposed"),
+            "refused": store.count_proposals("refused"),
+        }
+
+    @app.post("/proposal")
+    def decide_proposal(
+        body: ProposalBody, _: None = Depends(check_token)
+    ) -> dict[str, Any]:
+        """Confirm or refuse one proposed word.
+
+        A confirmed word joins the shadow words of its entity, so Kev reads it
+        and Jev does not. A refused word stays in the log, so the same proposal
+        does not come back. Both decisions keep the date and the author.
+        """
+        row = store.get_proposal(body.id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown proposal")
+        if row["status"] != "proposed":
+            raise HTTPException(status_code=409, detail="the proposal is not proposed")
+        if body.decision == "confirm":
+            if settings.house_words is None:
+                raise HTTPException(status_code=409, detail="no house words file")
+            # The file goes first, so a failed write keeps the row proposed
+            # and the person can try again.
+            add_shadow_word(settings.house_words, row["entity_id"], row["word"])
+        status = "confirmed" if body.decision == "confirm" else "refused"
+        if not store.decide_proposal(
+            body.id, status, body.by, datetime.now(UTC).isoformat()
+        ):
+            # Another writer decided the row during this call.
+            raise HTTPException(status_code=409, detail="the proposal is not proposed")
+        if body.decision == "confirm":
+            reload_house()
+            return {"status": "confirmed", "shadow": True}
+        return {"status": "refused"}
 
     @app.get("/stats")
     def get_stats(_: None = Depends(check_token)) -> dict[str, Any]:

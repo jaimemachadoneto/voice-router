@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from voice_router.aliases import actions_in, has_question_word
 from voice_router.house import FilterResult, House
@@ -21,7 +21,7 @@ from voice_router.jev import Answer, Jev, JevError, Question
 from voice_router.proposals import STOP_WORDS, missed_word
 from voice_router.questions import ACTION, ACTION_Q, ROUTE, ROUTE_Q, device_question
 from voice_router.values import resolve
-from voice_router.words import NONE, Entity, choose, fold
+from voice_router.words import NONE, Entity, choose, fold, has_phrase
 
 DEVICE_COMMAND = "device_command"
 OFFLINE = "offline"
@@ -47,6 +47,8 @@ class Decision:
     local route decided. `stale_since` holds the time of the sync that changed
     the words version, when the local route is stale. `proposal` holds the
     diagnosis answer and its candidates when the filter missed a word.
+    `shadow_words` and `active_words` hold the words of each word set that the
+    command used.
     """
 
     route: str
@@ -63,6 +65,8 @@ class Decision:
     local: dict | None = None
     stale_since: str | None = None
     proposal: dict | None = None
+    shadow_words: list[str] = field(default_factory=list)
+    active_words: list[str] = field(default_factory=list)
 
 
 _WORD = re.compile(r"\w+", re.UNICODE)
@@ -77,6 +81,17 @@ def _text_words(text: str) -> set[str]:
 def _entity_words(entity: Entity) -> set[str]:
     """The folded words of the name and the aliases of an entity."""
     return _text_words(" ".join((entity.name, *entity.aliases)))
+
+
+def _applied_words(text: str, words: dict[str, list[str]]) -> list[str]:
+    """The words of a word map that the text names, in the order of the map."""
+    norm = fold(text)
+    found: list[str] = []
+    for options in words.values():
+        for word in options:
+            if word not in found and has_phrase(norm, fold(word)):
+                found.append(word)
+    return found
 
 
 def _diagnosis_options(house: House, room: str | None, text: str) -> list[str]:
@@ -420,6 +435,8 @@ async def decide(
         local_first=local_first and not stale,
         stale=stale,
     )
+    decision.shadow_words = _applied_words(text, house.words.shadow_entities)
+    decision.active_words = _applied_words(text, house.words.entities)
     if stale and decision.route == DEVICE_COMMAND:
         decision.reason = "stale"
         decision.stale_since = stale_since
