@@ -94,14 +94,14 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           load: true
-          tags: local/ci:scan
+          tags: local/ci:scan-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: local/ci:scan
+          image-ref: local/ci:scan-${{ github.sha }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"

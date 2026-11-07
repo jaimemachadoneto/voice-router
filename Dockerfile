@@ -4,6 +4,13 @@ FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
+# The scanner refuses an image with a fixable HIGH finding, and the base image
+# ships Debian packages that carry one. Take the security updates of the base
+# distribution, then remove the lists so the layer stays small.
+RUN apt-get update \
+    && apt-get -y upgrade \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY pyproject.toml ./
