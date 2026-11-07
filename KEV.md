@@ -76,7 +76,7 @@ service needs no secret.
 ## The shadow
 
 The router sends the device question to Kev beside Jev when the filter offers
-2 or more options. In the shadow, the Kev call never changes the reply.
+2 or more options. In the shadow, the Kev call never changes the Jev answer.
 
 The reply waits at most 0.05 s for the Kev answer. On a device command, a real
 answer within the grace goes into the reply and into the record. A later
@@ -90,13 +90,13 @@ command, a failed call writes an error to `decision.local`.
 When Jev fails or answers too late, the router uses the offline gate. The gate
 acts only on the offered devices, with these rules:
 
-- The filter offers at most 3 options.
+- The gate needs at most 3 options.
 - The words name exactly one action.
 - The words hold no question word.
 
 For 2 or 3 options, the gate asks Kev. Kev acts only when `choose()` accepts a
 strong answer and the choice is one of the offered devices. A weak answer or an
-answer outside the offered devices does not act.
+answer for a device that is not offered does not act.
 
 Without a Kev client, a set of 2 or 3 options does not act. A single option
 acts from the words alone.
@@ -138,7 +138,7 @@ The user confirms the exact command before the run.
 
 The measured run took about 54 minutes.
 
-Start a new training run after a change to the entity registry. This automatic
+Start a new training run after a change to the entity registry. The automatic
 run is a later task.
 
 ## The promotion checklist
