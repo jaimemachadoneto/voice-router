@@ -1,9 +1,9 @@
-"""The items that the person must see, and the record of what the router told.
+"""The items that the person must see.
 
 A proposal whose word asked in three commands becomes one repeated item. One
-item each day gives the count of the proposed items. The store keeps the key
-of each item that the router reported, so a second call or a restart does not
-repeat it.
+item each day gives the count of the proposed items. The endpoint returns the
+complete set on every call and consumes nothing, so a second call or a restart
+returns the same set.
 """
 
 from __future__ import annotations
@@ -24,18 +24,13 @@ def _command_count(proposal: dict) -> int:
     )
 
 
-def _reported(store: Store, key: str, now: datetime) -> bool:
-    """Keep the key with the time. True means that the key is new."""
-    return store.mark_notified(key, now.isoformat())
-
-
 def due(store: Store, now: datetime) -> list[dict]:
-    """The items that are due now, with their keys recorded in the store.
+    """The complete set of items that wait now.
 
-    The caller gives the time, so this module reads no clock. The store keeps
-    the key of each item under the lock, and this function returns only the
-    items whose key is new. The daily key holds the date, so a later date
-    gives a new item. A confirmed or refused proposal gives no item.
+    The call consumes nothing, so the same store and time give the same set.
+    The caller gives the time, so this module reads no clock. The daily key
+    holds the date of that time, which is the local date of the router. A
+    confirmed or refused proposal gives no item.
     """
     proposed = store.list_proposals("proposed")
     items: list[dict] = []
@@ -45,23 +40,20 @@ def due(store: Store, now: datetime) -> list[dict]:
             continue
         word_key = fold(proposal.get("word") or "")
         key = f"repeated:{word_key}:{proposal['entity_id']}"
-        if _reported(store, key, now):
-            items.append(
-                {
-                    "key": key,
-                    "kind": "repeated",
-                    "count": count,
-                    "word": proposal["word"],
-                    "entity_id": proposal["entity_id"],
-                }
-            )
-    # Nothing to do gives no summary, and the day stays unreported, so work
-    # that waits later in the day still gives its one summary.
-    daily_key = f"daily:{now.date().isoformat()}"
-    if proposed and _reported(store, daily_key, now):
         items.append(
             {
-                "key": daily_key,
+                "key": key,
+                "kind": "repeated",
+                "count": count,
+                "word": proposal["word"],
+                "entity_id": proposal["entity_id"],
+            }
+        )
+    # Nothing to do gives no summary.
+    if proposed:
+        items.append(
+            {
+                "key": f"daily:{now.date().isoformat()}",
                 "kind": "daily",
                 "count": len(proposed),
                 "word": None,

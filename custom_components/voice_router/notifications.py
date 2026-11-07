@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import re
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
@@ -41,9 +41,13 @@ class NotifyClient(Protocol):
 
 
 def notification_id(key: str) -> str:
-    """Make a stable notification id from the key of the item."""
-    slug = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
-    return f"{NOTIFICATION_PREFIX}{slug}"
+    """Make a stable notification id from the key of the item.
+
+    The truncated hash keeps two keys apart also when they differ only in a
+    non-Latin word. The same key gives the same id after a restart.
+    """
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return f"{NOTIFICATION_PREFIX}{digest}"
 
 
 def _language(hass: HomeAssistant) -> str:
@@ -63,6 +67,21 @@ def _text(item: dict[str, Any], language: str) -> tuple[str, str]:
     return title, body
 
 
+def _shown_ids(items: list[dict[str, Any]]) -> set[str]:
+    """The notification ids of the items of a known kind."""
+    return {
+        notification_id(item["key"])
+        for item in items
+        if item.get("kind") in _PHRASE_KEYS
+    }
+
+
+def _current_ids(hass: HomeAssistant) -> set[str]:
+    """The ids of the persistent notifications of this component."""
+    notifications = hass.data.get(persistent_notification.DOMAIN) or {}
+    return {key for key in notifications if key.startswith(NOTIFICATION_PREFIX)}
+
+
 async def async_show(hass: HomeAssistant, items: list[dict[str, Any]]) -> None:
     """Create or update one notification for each item of a known kind."""
     language = _language(hass)
@@ -71,7 +90,7 @@ async def async_show(hass: HomeAssistant, items: list[dict[str, Any]]) -> None:
         if kind not in _PHRASE_KEYS:
             # A newer router can report a kind that this version does not know.
             # The other items must still show.
-            _LOGGER.debug("The notification kind %s is unknown", kind)
+            _LOGGER.warning("The notification kind %s is unknown", kind)
             continue
         title, body = _text(item, language)
         persistent_notification.async_create(
@@ -80,6 +99,26 @@ async def async_show(hass: HomeAssistant, items: list[dict[str, Any]]) -> None:
             title=title,
             notification_id=notification_id(item["key"]),
         )
+
+
+async def async_reconcile(
+    hass: HomeAssistant,
+    *,
+    items: list[dict[str, Any]],
+    shown: list[dict[str, Any]],
+) -> None:
+    """Show the items and dismiss the notifications that no longer wait.
+
+    The returned set is the truth: a notification whose key the set does not
+    hold no longer waits, so it goes. The actual notifications go too, so an
+    id of an old scheme does not stay. The keyword-only arguments make a swap
+    of the two lists a TypeError.
+    """
+    await async_show(hass, items)
+    wanted = _shown_ids(items)
+    for shown_id in _shown_ids(shown) | _current_ids(hass):
+        if shown_id not in wanted:
+            persistent_notification.async_dismiss(hass, shown_id)
 
 
 def _store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
@@ -95,15 +134,6 @@ def _items(data: Any) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         return []
     return [item for item in items if isinstance(item, dict)]
-
-
-def _with_new_items(
-    shown: list[dict[str, Any]], items: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Merge the items by key, so the newest copy of an item replaces it."""
-    by_key = {item.get("key"): item for item in shown}
-    by_key.update({item.get("key"): item for item in items})
-    return list(by_key.values())
 
 
 async def _async_restore(hass: HomeAssistant, store: Store) -> list[dict[str, Any]]:
@@ -132,33 +162,26 @@ async def async_start_notifications(
 ) -> None:
     """Restore the shown items, poll now, then poll at each interval."""
     store = _store(hass, entry)
-    restored = await _async_restore(hass, store)
+    shown = await _async_restore(hass, store)
 
-    async def _async_poll(
-        _now: datetime, merge: list[dict[str, Any]] | None = None
-    ) -> None:
-        """Get the items and show them. A failure writes a warning.
+    async def _async_poll(_now: datetime) -> None:
+        """Reconcile the notifications with the complete set from the router.
 
-        A poll that the router refuses keeps the stored items, because the
-        router does not report a key that it already reported.
+        The returned set is the truth, so a decided word goes by itself. A
+        failed poll changes nothing: the saved set stays and the entry stays
+        loaded.
         """
+        nonlocal shown
         try:
             items = await client.notifications()
         except RouterUnavailable as error:
             _LOGGER.warning("The router did not give the notifications: %s", error)
             return
-        await async_show(hass, items)
-        if not items and merge is None:
-            # The router gives no news. A key that it already reported does not
-            # come back, so the stored items are the ones that still wait.
-            return
-        # A replaced set forgets an item that the person decided, because the
-        # router does not report it again. At setup the restored items stay, so
-        # a second restart does not lose a notice that the person did not decide.
-        stored = _with_new_items(merge, items) if merge is not None else items
-        await _async_save(store, stored)
+        await async_reconcile(hass, items=items, shown=shown)
+        shown = items
+        await _async_save(store, items)
 
-    await _async_poll(dt_util.utcnow(), restored)
+    await _async_poll(dt_util.utcnow())
     unsub = async_track_time_interval(
         hass,
         _async_poll,

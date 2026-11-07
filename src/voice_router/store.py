@@ -49,7 +49,6 @@ _SCHEMA = (
         "at TEXT, word TEXT, entity_id TEXT, change TEXT, source TEXT,"
         " record_id TEXT)"
     ),
-    ("CREATE TABLE IF NOT EXISTS notified(key TEXT PRIMARY KEY, at TEXT)"),
 )
 
 # The columns of a proposal row, in the order that `_proposal` reads them.
@@ -160,6 +159,9 @@ def _migrate(db: sqlite3.Connection) -> None:
     # The old progress table held no count that the shadow uses. A reset row
     # replaces it, so an old database gives up the dead table.
     db.execute("DROP TABLE IF EXISTS word_progress")
+    # The notifications route consumes nothing now, so the record of a
+    # reported key has no use. An old database gives up the dead table.
+    db.execute("DROP TABLE IF EXISTS notified")
     event_columns = {
         row[1] for row in db.execute("PRAGMA table_info(word_events)").fetchall()
     }
@@ -465,20 +467,6 @@ class Store:
                 "SELECT COUNT(*) FROM proposals WHERE status = ?", (status,)
             ).fetchone()
         return row[0] if row else 0
-
-    def mark_notified(self, key: str, at: str) -> bool:
-        """Keep a reported notification key. False means that the store held it.
-
-        The primary key of the table holds each key, so a second call inserts
-        no row. The lock and the insert make one step, so two callers do not
-        both report one key.
-        """
-        with self._lock:
-            cursor = self._db.execute(
-                "INSERT OR IGNORE INTO notified(key, at) VALUES (?, ?)", (key, at)
-            )
-            self._db.commit()
-            return cursor.rowcount > 0
 
     def is_refused(self, word_key: str, entity_id: str) -> bool:
         """True when a refused proposal holds this folded word and entity."""

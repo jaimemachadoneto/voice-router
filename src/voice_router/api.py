@@ -356,12 +356,13 @@ def create_app(
 
     @app.get("/notifications")
     def get_notifications(_: None = Depends(check_token)) -> dict[str, Any]:
-        """Return the items that are due now, and record their keys.
+        """Return the complete set of items that wait now.
 
-        The router records the key of each item, so a second poll or a restart
-        in the same day returns no repeated item.
+        The route consumes nothing, so a second call or a restart returns the
+        same set. The component reconciles the notifications with this set.
+        The local time gives the daily key.
         """
-        return {"items": notifications.due(store, datetime.now(UTC))}
+        return {"items": notifications.due(store, datetime.now())}
 
     @app.get("/proposals")
     def get_proposals(_: None = Depends(check_token)) -> dict[str, Any]:

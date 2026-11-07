@@ -1,13 +1,13 @@
 """The notifications that wait for a person.
 
 A word that the same person missed in three commands becomes one repeated item.
-One item each day gives the summary of the proposed items. The store keeps each
-reported key, so a second call or a restart does not repeat an item. The tests
-give a fixed time, an invented house and invented commands.
+One item each day gives the summary of the proposed items. The endpoint returns
+the complete set on every call and consumes nothing. The tests give a fixed
+time, an invented house and invented commands.
 """
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,6 +26,9 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 NOW = datetime(2026, 11, 7, 9, 30, tzinfo=UTC)
 TOMORROW = datetime(2026, 11, 8, 0, 0, 1, tzinfo=UTC)
 
+# The local time is on the next day, but UTC is still on the day before.
+LOCAL_LATE = datetime(2026, 11, 8, 0, 30, tzinfo=timezone(timedelta(hours=2)))
+
 THREE_COMMANDS = ["liga o abajur", "apaga o abajur", "acende o abajur"]
 
 
@@ -35,6 +38,16 @@ class FrozenDateTime(datetime):
     @classmethod
     def now(cls, tz=None):
         return NOW
+
+
+class LocalFrozenDateTime(datetime):
+    """A datetime whose now is a local time near the start of the day."""
+
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return LOCAL_LATE
+        return LOCAL_LATE.astimezone(tz)
 
 
 @pytest.fixture
@@ -110,23 +123,29 @@ def test_a_repeated_command_counts_once(store: Store):
     assert repeated(notifications.due(store, NOW)) == []
 
 
-def test_a_second_call_in_the_same_day_repeats_no_item(store: Store):
+def test_two_calls_return_the_same_complete_set(store: Store):
     add_proposal(store, "abajur", THREE_COMMANDS)
+
     first = notifications.due(store, NOW)
-    assert repeated(first) != []
+    second = notifications.due(store, NOW)
 
-    assert notifications.due(store, NOW) == []
+    assert second == first
+    assert {item["key"] for item in first} == {
+        "repeated:abajur:light.sala",
+        "daily:2026-11-07",
+    }
 
 
-def test_a_restart_in_the_same_day_repeats_no_item(tmp_path: Path):
+def test_a_restart_returns_the_same_complete_set(tmp_path: Path):
     path = tmp_path / "router.db"
     first_store = Store(path)
     add_proposal(first_store, "abajur", THREE_COMMANDS)
-    assert repeated(notifications.due(first_store, NOW)) != []
+    first = notifications.due(first_store, NOW)
+    assert first != []
 
     reopened = Store(path)
 
-    assert notifications.due(reopened, NOW) == []
+    assert notifications.due(reopened, NOW) == first
 
 
 def test_a_confirmed_word_gives_no_item(store: Store):
@@ -155,7 +174,18 @@ def test_two_different_words_give_two_items(store: Store):
     }
 
 
-def test_the_daily_item_counts_the_proposed_items_once(store: Store):
+def test_the_daily_item_appears_only_when_a_proposal_waits(store: Store):
+    # Nothing waits, so the summary is absent.
+    assert daily(notifications.due(store, NOW)) == []
+
+    add_proposal(store, "abajur", ["liga o abajur"])
+
+    items = daily(notifications.due(store, NOW))
+    assert len(items) == 1
+    assert items[0]["count"] == 1
+
+
+def test_the_daily_item_counts_the_proposed_items(store: Store):
     add_proposal(store, "abajur", ["liga o abajur"])
     add_proposal(store, "cortina", ["apaga a cortina"])
 
@@ -166,7 +196,6 @@ def test_the_daily_item_counts_the_proposed_items_once(store: Store):
     assert first[0]["count"] == 2
     assert first[0]["word"] is None
     assert first[0]["entity_id"] is None
-    assert notifications.due(store, NOW) == []
 
     tomorrow = daily(notifications.due(store, TOMORROW))
 
@@ -175,16 +204,17 @@ def test_the_daily_item_counts_the_proposed_items_once(store: Store):
     assert tomorrow[0]["count"] == 2
 
 
-def test_a_day_with_nothing_to_do_gives_no_daily_item(store: Store):
-    # An empty summary is noise, so the day stays unreported until work waits.
-    assert daily(notifications.due(store, NOW)) == []
-
+def test_the_endpoint_daily_key_uses_the_local_date(
+    settings: Settings, store: Store, monkeypatch: pytest.MonkeyPatch
+):
     add_proposal(store, "abajur", ["liga o abajur"])
+    monkeypatch.setattr("voice_router.api.datetime", LocalFrozenDateTime)
+    with TestClient(create_app(settings, FakeJev(), store)) as client:
+        response = client.get("/notifications", headers=HEADERS)
 
-    # The same day now has an item, because the day was not marked as reported.
-    later = daily(notifications.due(store, NOW))
-    assert len(later) == 1
-    assert later[0]["count"] == 1
+    items = response.json()["items"]
+    # The UTC date is the day before, so this key shows the local date.
+    assert daily(items)[0]["key"] == "daily:2026-11-08"
 
 
 def test_the_endpoint_returns_the_due_items(
@@ -200,6 +230,19 @@ def test_the_endpoint_returns_the_due_items(
     assert len(repeated(items)) == 1
     assert repeated(items)[0]["word"] == "abajur"
     assert daily(items)[0]["key"] == "daily:2026-11-07"
+
+
+def test_the_endpoint_returns_the_same_set_twice(
+    settings: Settings, store: Store, monkeypatch: pytest.MonkeyPatch
+):
+    add_proposal(store, "abajur", THREE_COMMANDS)
+    monkeypatch.setattr("voice_router.api.datetime", FrozenDateTime)
+    with TestClient(create_app(settings, FakeJev(), store)) as client:
+        first = client.get("/notifications", headers=HEADERS).json()["items"]
+        second = client.get("/notifications", headers=HEADERS).json()["items"]
+
+    assert second == first
+    assert len(first) == 2
 
 
 def test_the_endpoint_without_the_token_is_refused(settings: Settings, store: Store):
