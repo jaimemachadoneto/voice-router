@@ -20,11 +20,9 @@ from importlib.resources import files
 from uuid import uuid4
 
 from voice_router.aliases import WordData
+from voice_router.house import House
 from voice_router.store import Store
 from voice_router.words import NONE, fold
-
-# The option count when the filter finds no word: the shortlist of the model.
-FALLBACK_OPTIONS = 10
 
 # The short words that no proposal needs. A word of one letter goes too.
 STOP_WORDS = frozenset(
@@ -189,16 +187,32 @@ def change_sentence(before: int, after: int) -> str:
     """The sentence of the option set before and after a word."""
     noun = "option" if before == 1 else "options"
     verb = "becomes" if before == 1 else "become"
-    return f"{before} {noun} {verb} {after}"
+    count = "no" if before == 0 else str(before)
+    return f"{count} {noun} {verb} {after}"
 
 
 def _with_change(proposal: dict) -> dict:
-    """One proposal with the change sentence of this version.
+    """One proposal with the change sentence of its stored counts."""
+    return {
+        **proposal,
+        "change": change_sentence(proposal["before_count"], proposal["after_count"]),
+    }
 
-    The table keeps no change column, because the sentence comes from the
-    option count of the word and not from the command.
+
+def _counts(
+    house: House, record: dict, text: str, word: str, entity_id: str
+) -> tuple[int, int]:
+    """The option counts before and after the word joins the list.
+
+    The record holds no set of options, so the filter selected no device: the
+    count before the word is 0. The count after is the set of the same command
+    and room with the word as an entity word of the entity that Jev named.
     """
-    return {**proposal, "change": change_sentence(FALLBACK_OPTIONS, 1)}
+    decision = record.get("decision") or {}
+    before = len(decision.get("options") or [])
+    room = (record.get("request") or {}).get("room")
+    result = house.filter_with_word(text, room, entity_id, word)
+    return before, len(result.options or [])
 
 
 def _unplaceable(store: Store, record: dict) -> None:
@@ -212,21 +226,24 @@ def _unplaceable(store: Store, record: dict) -> None:
         store.set_decision(record_id, decision)
 
 
-def record_proposal(store: Store, record: dict, words: WordData) -> dict | None:
+def record_proposal(store: Store, house: House, record: dict) -> dict | None:
     """Keep one proposal for the missed word of a record, or None.
 
     The meaning comes from the domain of the device and the words of the
     command. A device with no domain word gives no proposal, and its record
     notes the reason `unplaceable`. A repeat of the same word and entity joins
     the command text to the stored proposal.
+
+    The change comes from the filter of the house: the word is added to the
+    words of the entity that Jev named, and the option count is measured.
     """
-    found = candidate(record, words)
+    found = candidate(record, house.words)
     if found is None:
         return None
     word, entity_id = found
     domain = entity_id.split(".")[0]
     request = record.get("request") or {}
-    meaning = meaning_for(domain, words, request.get("language"))
+    meaning = meaning_for(domain, house.words, request.get("language"))
     if meaning is None:
         _unplaceable(store, record)
         return None
@@ -237,6 +254,7 @@ def record_proposal(store: Store, record: dict, words: WordData) -> dict | None:
         store.add_proposal_command(existing["id"], text)
         stored = store.find_proposal(word, entity_id)
         return _with_change(stored) if stored is not None else None
+    before, after = _counts(house, record, text, word, entity_id)
     proposal = _with_change(
         {
             "id": uuid4().hex,
@@ -247,6 +265,8 @@ def record_proposal(store: Store, record: dict, words: WordData) -> dict | None:
             "at": datetime.now(UTC).isoformat(),
             "status": "proposed",
             "commands": [text],
+            "before_count": before,
+            "after_count": after,
         }
     )
     store.save_proposal(proposal)

@@ -124,7 +124,7 @@ def _record_proposal(store: Store, record_id: str, house: House | None) -> None:
 
     A proposal is a side note of the log. No proposal work may fail the log of
     an action, so every error is ignored. The house is absent before the first
-    sync, and it gives the words.
+    sync, and it gives the words and the filter of the proposal.
     """
     if house is None:
         return
@@ -134,7 +134,7 @@ def _record_proposal(store: Store, record_id: str, house: House | None) -> None:
             return
         if (record.get("decision") or {}).get("options") is not None:
             return
-        proposals.record_proposal(store, record, house.words)
+        proposals.record_proposal(store, house, record)
     except Exception:  # noqa: BLE001, S110
         # The log of the action is the important record. A broken proposal
         # must not break it, and the service logs nothing here.

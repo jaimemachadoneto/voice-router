@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from voice_router import proposals
 from voice_router.aliases import WordData, load_word_data
 from voice_router.api import create_app
+from voice_router.house import House
 from voice_router.jev import Answer, Jev, Question
 from voice_router.settings import Settings
 from voice_router.store import Store
@@ -53,6 +54,50 @@ PAYLOAD = {
     "registry_hash": "sha256:abc",
 }
 
+# One light in one area, for the small house of the change tests.
+ONE_LIGHT = {
+    "entities": [
+        {
+            "entity_id": "light.sala",
+            "name": "Luz da Sala",
+            "area": "Sala",
+            "aliases": [],
+            "risky": False,
+        },
+    ],
+    "areas": {"Sala": ["sala"]},
+    "registry_hash": "sha256:one",
+}
+
+# Three lights in three areas, for the large house of the change tests.
+THREE_LIGHTS = {
+    "entities": [
+        {
+            "entity_id": "light.sala",
+            "name": "Luz da Sala",
+            "area": "Sala",
+            "aliases": [],
+            "risky": False,
+        },
+        {
+            "entity_id": "light.quarto",
+            "name": "Luz do Quarto",
+            "area": "Quarto",
+            "aliases": [],
+            "risky": False,
+        },
+        {
+            "entity_id": "light.cozinha",
+            "name": "Luz da Cozinha",
+            "area": "Cozinha",
+            "aliases": [],
+            "risky": False,
+        },
+    ],
+    "areas": {"Sala": ["sala"], "Quarto": ["quarto"], "Cozinha": ["cozinha"]},
+    "registry_hash": "sha256:three",
+}
+
 
 class FakeJev(Jev):
     """A Jev that is never asked: the log tests insert their records."""
@@ -76,6 +121,12 @@ def words() -> WordData:
 @pytest.fixture
 def store(tmp_path: Path) -> Store:
     return Store(tmp_path / "router.db")
+
+
+@pytest.fixture
+def house(words: WordData) -> House:
+    """The house of the payload, with the general words."""
+    return House.from_sync(PAYLOAD, words)
 
 
 @pytest.fixture
@@ -119,10 +170,10 @@ def make_client(settings: Settings, store: Store) -> TestClient:
     return TestClient(create_app(settings, FakeJev(), store))
 
 
-def test_a_missed_word_makes_one_proposal(store: Store, words: WordData):
+def test_a_missed_word_makes_one_proposal(store: Store, house: House):
     record = add_record(store, "liga o abajur da sala")
 
-    proposal = proposals.record_proposal(store, record, words)
+    proposal = proposals.record_proposal(store, house, record)
 
     assert proposal is not None
     assert proposal["word"] == "abajur"
@@ -136,12 +187,10 @@ def test_a_missed_word_makes_one_proposal(store: Store, words: WordData):
     assert proposals.list_proposals(store) == [proposal]
 
 
-def test_the_same_word_from_three_commands_is_one_proposal(
-    store: Store, words: WordData
-):
+def test_the_same_word_from_three_commands_is_one_proposal(store: Store, house: House):
     texts = ["liga o abajur", "apaga o abajur", "acende o abajur"]
     for text in texts:
-        proposals.record_proposal(store, add_record(store, text), words)
+        proposals.record_proposal(store, house, add_record(store, text))
 
     stored = proposals.list_proposals(store)
 
@@ -149,9 +198,9 @@ def test_the_same_word_from_three_commands_is_one_proposal(
     assert stored[0]["commands"] == texts
 
 
-def test_a_repeated_command_is_not_duplicated(store: Store, words: WordData):
-    proposals.record_proposal(store, add_record(store, "liga o abajur"), words)
-    proposals.record_proposal(store, add_record(store, "liga o abajur"), words)
+def test_a_repeated_command_is_not_duplicated(store: Store, house: House):
+    proposals.record_proposal(store, house, add_record(store, "liga o abajur"))
+    proposals.record_proposal(store, house, add_record(store, "liga o abajur"))
 
     stored = proposals.list_proposals(store)
 
@@ -159,10 +208,10 @@ def test_a_repeated_command_is_not_duplicated(store: Store, words: WordData):
     assert stored[0]["commands"] == ["liga o abajur"]
 
 
-def test_a_proposal_keeps_at_most_ten_commands(store: Store, words: WordData):
+def test_a_proposal_keeps_at_most_ten_commands(store: Store, house: House):
     for index in range(12):
         text = f"liga o abajur {index}"
-        proposals.record_proposal(store, add_record(store, text), words)
+        proposals.record_proposal(store, house, add_record(store, text))
 
     stored = proposals.list_proposals(store)
 
@@ -170,10 +219,10 @@ def test_a_proposal_keeps_at_most_ten_commands(store: Store, words: WordData):
     assert len(stored[0]["commands"]) == 10
 
 
-def test_a_word_with_no_domain_word_makes_no_proposal(store: Store, words: WordData):
+def test_a_word_with_no_domain_word_makes_no_proposal(store: Store, house: House):
     record = add_record(store, "abre a porta", device="lock.front")
 
-    proposal = proposals.record_proposal(store, record, words)
+    proposal = proposals.record_proposal(store, house, record)
 
     assert proposal is None
     assert proposals.list_proposals(store) == []
@@ -182,23 +231,23 @@ def test_a_word_with_no_domain_word_makes_no_proposal(store: Store, words: WordD
     assert stored["decision"]["proposal"] == "unplaceable"
 
 
-def test_a_proposal_holds_the_change_sentence(store: Store, words: WordData):
+def test_a_proposal_holds_the_change_sentence(store: Store, house: House):
     proposal = proposals.record_proposal(
-        store, add_record(store, "liga o abajur"), words
+        store, house, add_record(store, "liga o abajur")
     )
 
     assert proposal is not None
-    assert proposal["change"] == "10 options become 1"
+    assert proposal["change"] == "no options become 1"
 
 
 def test_the_same_word_from_two_entities_makes_two_proposals(
-    store: Store, words: WordData
+    store: Store, house: House
 ):
     proposals.record_proposal(
-        store, add_record(store, "liga o abajur", device="light.sala"), words
+        store, house, add_record(store, "liga o abajur", device="light.sala")
     )
     proposals.record_proposal(
-        store, add_record(store, "liga o abajur", device="light.quarto"), words
+        store, house, add_record(store, "liga o abajur", device="light.quarto")
     )
 
     stored = proposals.list_proposals(store)
@@ -207,11 +256,11 @@ def test_the_same_word_from_two_entities_makes_two_proposals(
     assert {item["entity_id"] for item in stored} == {"light.sala", "light.quarto"}
 
 
-def test_a_general_word_makes_no_proposal(store: Store, words: WordData):
+def test_a_general_word_makes_no_proposal(store: Store, house: House):
     record = add_record(store, "turn on the light", language="en")
 
-    assert proposals.candidate(record, words) is None
-    assert proposals.record_proposal(store, record, words) is None
+    assert proposals.candidate(record, house.words) is None
+    assert proposals.record_proposal(store, house, record) is None
     assert proposals.list_proposals(store) == []
 
 
@@ -269,11 +318,73 @@ def test_candidate_keeps_the_earliest_of_two_equal_words(words: WordData):
         (1, 3, "1 option becomes 3"),
         (2, 4, "2 options become 4"),
         (1, 1, "1 option becomes 1"),
-        (0, 1, "0 options become 1"),
+        (0, 3, "no options become 3"),
+        (0, 1, "no options become 1"),
     ],
 )
 def test_change_sentence_counts_the_options(before: int, after: int, sentence: str):
     assert proposals.change_sentence(before, after) == sentence
+
+
+def test_a_proposal_computes_the_change_from_the_house(tmp_path: Path, words: WordData):
+    store = Store(tmp_path / "one.db")
+    house = House.from_sync(ONE_LIGHT, words)
+
+    proposal = proposals.record_proposal(
+        store, house, add_record(store, "liga o abajur")
+    )
+
+    assert proposal is not None
+    assert proposal["before_count"] == 0
+    assert proposal["after_count"] >= 1
+    assert proposal["change"] == f"no options become {proposal['after_count']}"
+
+
+def test_two_houses_give_different_changes(tmp_path: Path, words: WordData):
+    one = Store(tmp_path / "one.db")
+    three = Store(tmp_path / "three.db")
+    house_one = House.from_sync(ONE_LIGHT, words)
+    house_three = House.from_sync(THREE_LIGHTS, words)
+
+    small = proposals.record_proposal(
+        one, house_one, add_record(one, "liga as luzes do abajur")
+    )
+    large = proposals.record_proposal(
+        three, house_three, add_record(three, "liga as luzes do abajur")
+    )
+
+    assert small is not None
+    assert large is not None
+    assert small["after_count"] == 1
+    assert large["after_count"] == 3
+    assert small["change"] == "no options become 1"
+    assert large["change"] == "no options become 3"
+
+
+def test_record_proposal_leaves_the_house_unchanged(store: Store, house: House):
+    before = house.entities["light.sala"].aliases
+
+    proposals.record_proposal(store, house, add_record(store, "liga o abajur"))
+
+    assert house.entities["light.sala"].aliases == before
+    assert "abajur" not in house.entities["light.sala"].aliases
+    assert house.filter("liga o abajur").options is None
+
+
+def test_an_old_database_gains_the_change_columns(tmp_path: Path):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE proposals("
+            "id TEXT PRIMARY KEY, word TEXT, meaning TEXT, domain TEXT,"
+            " entity_id TEXT, at TEXT, status TEXT, commands TEXT)"
+        )
+
+    Store(path)
+
+    with sqlite3.connect(path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(proposals)")}
+    assert {"before_count", "after_count"} <= columns
 
 
 def test_meaning_for_a_known_domain(words: WordData):
@@ -343,7 +454,8 @@ def test_a_failed_proposal_does_not_break_the_log(
 def test_the_proposal_table_survives_a_new_store(tmp_path: Path, words: WordData):
     path = tmp_path / "router.db"
     store = Store(path)
-    proposals.record_proposal(store, add_record(store, "liga o abajur"), words)
+    house = House.from_sync(PAYLOAD, words)
+    proposals.record_proposal(store, house, add_record(store, "liga o abajur"))
 
     reopened = Store(path)
 
@@ -355,7 +467,8 @@ def test_the_proposal_table_survives_a_new_store(tmp_path: Path, words: WordData
 def test_a_proposal_row_keeps_its_commands_as_json(tmp_path: Path, words: WordData):
     path = tmp_path / "router.db"
     store = Store(path)
-    proposals.record_proposal(store, add_record(store, "liga o abajur"), words)
+    house = House.from_sync(PAYLOAD, words)
+    proposals.record_proposal(store, house, add_record(store, "liga o abajur"))
 
     with sqlite3.connect(path) as db:
         row = db.execute("SELECT commands FROM proposals").fetchone()

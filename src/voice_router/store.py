@@ -28,7 +28,8 @@ _SCHEMA = (
     (
         "CREATE TABLE IF NOT EXISTS proposals("
         "id TEXT PRIMARY KEY, word TEXT, meaning TEXT, domain TEXT,"
-        " entity_id TEXT, at TEXT, status TEXT, commands TEXT)"
+        " entity_id TEXT, at TEXT, status TEXT, commands TEXT,"
+        " before_count INTEGER, after_count INTEGER)"
     ),
 )
 
@@ -47,18 +48,27 @@ def _proposal(row: tuple) -> dict[str, Any]:
         "at": row[5],
         "status": row[6],
         "commands": json.loads(row[7]) or [],
+        "before_count": row[8],
+        "after_count": row[9],
     }
 
 
 def _migrate(db: sqlite3.Connection) -> None:
-    """Add the alias version column to a database of an earlier version.
+    """Add the columns of a later version to a database of an earlier one.
 
-    `CREATE TABLE IF NOT EXISTS` keeps an old table as it is, so the column
+    `CREATE TABLE IF NOT EXISTS` keeps an old table as it is, so each column
     needs its own statement. A database with the column stays unchanged.
     """
-    columns = {row[1] for row in db.execute("PRAGMA table_info(syncs)").fetchall()}
-    if "alias_version" not in columns:
+    sync_columns = {row[1] for row in db.execute("PRAGMA table_info(syncs)").fetchall()}
+    if "alias_version" not in sync_columns:
         db.execute("ALTER TABLE syncs ADD COLUMN alias_version TEXT")
+    proposal_columns = {
+        row[1] for row in db.execute("PRAGMA table_info(proposals)").fetchall()
+    }
+    if "before_count" not in proposal_columns:
+        db.execute("ALTER TABLE proposals ADD COLUMN before_count INTEGER")
+    if "after_count" not in proposal_columns:
+        db.execute("ALTER TABLE proposals ADD COLUMN after_count INTEGER")
 
 
 class Store:
@@ -245,12 +255,13 @@ class Store:
         ]
 
     def save_proposal(self, proposal: dict[str, Any]) -> None:
-        """Keep one proposal, with its commands as JSON."""
+        """Keep one proposal, with its commands as JSON and its counts."""
         with self._lock:
             self._db.execute(
                 "INSERT INTO proposals"
-                "(id, word, meaning, domain, entity_id, at, status, commands)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, word, meaning, domain, entity_id, at, status, commands,"
+                " before_count, after_count)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     proposal["id"],
                     proposal["word"],
@@ -260,6 +271,8 @@ class Store:
                     proposal["at"],
                     proposal["status"],
                     json.dumps(proposal.get("commands") or []),
+                    proposal["before_count"],
+                    proposal["after_count"],
                 ),
             )
             self._db.commit()
@@ -268,7 +281,8 @@ class Store:
         """The proposal for one word and entity, or None when there is none."""
         with self._lock:
             row = self._db.execute(
-                "SELECT id, word, meaning, domain, entity_id, at, status, commands"
+                "SELECT id, word, meaning, domain, entity_id, at, status, commands,"
+                " before_count, after_count"
                 " FROM proposals WHERE word = ? AND entity_id = ?"
                 " ORDER BY rowid LIMIT 1",
                 (word, entity_id),
@@ -301,7 +315,8 @@ class Store:
         """The proposals with one status, oldest first."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT id, word, meaning, domain, entity_id, at, status, commands"
+                "SELECT id, word, meaning, domain, entity_id, at, status, commands,"
+                " before_count, after_count"
                 " FROM proposals WHERE status = ? ORDER BY rowid",
                 (status,),
             ).fetchall()

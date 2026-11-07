@@ -7,7 +7,7 @@ selected the options of a command.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from voice_router.aliases import WordData
@@ -124,3 +124,21 @@ class House:
         if room is not None and not _named_areas(text, areas):
             return FilterResult(options, "default_room")
         return FilterResult(options, "domain")
+
+    def filter_with_word(
+        self, text: str, room: str | None, entity_id: str, word: str
+    ) -> FilterResult:
+        """The filter result of a text with one extra word for one entity.
+
+        The extra word names the entity, as an alias does. The call copies the
+        entity and the map of entities, so the live house stays unchanged. An
+        entity that the house does not hold gives the result of the text alone.
+        """
+        entity = self.entities.get(entity_id)
+        if entity is None:
+            return self.filter(text, room)
+        entities = {
+            **self.entities,
+            entity_id: replace(entity, aliases=(*entity.aliases, word)),
+        }
+        return replace(self, entities=entities).filter(text, room)
