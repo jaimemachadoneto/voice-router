@@ -135,11 +135,16 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
             self.hass.async_create_task(self._client.log(record_id, result))
 
     def _purge_pendings(self) -> None:
-        """Remove each pending action whose time is past."""
+        """Remove each pending action and each last command that is past its time."""
         now = utcnow()
         for conversation_id in list(self.pending):
             if self.pending[conversation_id].expires <= now:
                 del self.pending[conversation_id]
+        # A last command that is older than REPEAT_SECONDS can never mark a
+        # record, so the agent does not keep it in memory.
+        for conversation_id in list(self._last):
+            if (now - self._last[conversation_id].at).total_seconds() > REPEAT_SECONDS:
+                del self._last[conversation_id]
 
     def _any_exposed(self, entity_ids: list[str], risky: list[str]) -> bool:
         """Tell if a risky entity of the decision is exposed to conversation."""
@@ -197,22 +202,6 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         # that the answer does not match.
         self.pending.pop(conversation_id, None)
 
-        # A repeat or a correction marks the record of the previous action, so
-        # the log says which actions were wrong. The mark never changes the
-        # current request.
-        last = self._last.get(conversation_id)
-        if (
-            last is not None
-            and last.record_id
-            and last.acted
-            and (utcnow() - last.at).total_seconds() <= REPEAT_SECONDS
-        ):
-            normalized = text.strip().lower()
-            if normalized == last.text:
-                self._async_log(last.record_id, {"repeat": True})
-            else:
-                self._async_log(last.record_id, {"correction": True})
-
         room = _room_name(self.hass, user_input.device_id)
         try:
             decision = await self._client.route(
@@ -223,6 +212,25 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
 
         record_id = decision.get("record_id", "")
         route: str = decision.get("route", "")
+
+        # A repeat or a correction marks the record of the previous action, so
+        # the log says which actions were wrong. The mark never changes the
+        # current request. Only a device command or an offline answer counts: a
+        # chat question after an action is not a correction of it.
+        last = self._last.get(conversation_id)
+        if (
+            route in (DEVICE_COMMAND, OFFLINE)
+            and last is not None
+            and last.record_id
+            and last.acted
+            and (utcnow() - last.at).total_seconds() <= REPEAT_SECONDS
+        ):
+            normalized = text.strip().lower()
+            if normalized == last.text:
+                self._async_log(last.record_id, {"repeat": True})
+            else:
+                self._async_log(last.record_id, {"correction": True})
+
         if record_id:
             self._last[conversation_id] = LastCommand(
                 text.strip().lower(), record_id, utcnow(), bool(decision.get("act"))
@@ -241,11 +249,6 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
                     decision=decision,
                     record_id=record_id,
                     expires=utcnow() + timedelta(seconds=CONFIRM_SECONDS),
-                )
-                # The confirmation acts later, so the record of the command is
-                # the one that a repeat or a correction must mark.
-                self._last[conversation_id] = LastCommand(
-                    text.strip().lower(), record_id, utcnow(), True
                 )
                 self._async_log(record_id, {"pending": True})
                 return self._reply(

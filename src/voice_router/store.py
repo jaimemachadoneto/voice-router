@@ -90,6 +90,26 @@ class Store:
             self._db.commit()
             return cursor.rowcount > 0
 
+    def merge_result(self, record_id: str, result: dict[str, Any]) -> bool:
+        """Join a result to the record under one lock.
+
+        A later mark joins the result of the action and does not replace it.
+        False means that the id is unknown.
+        """
+        with self._lock:
+            row = self._db.execute(
+                "SELECT result FROM records WHERE id = ?", (record_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            merged = {**(json.loads(row[0]) or {}), **result}
+            self._db.execute(
+                "UPDATE records SET result = ? WHERE id = ?",
+                (json.dumps(merged), record_id),
+            )
+            self._db.commit()
+            return True
+
     def set_local(self, record_id: str, local: dict[str, Any]) -> bool:
         """Keep the Kev answer in the decision of a record.
 

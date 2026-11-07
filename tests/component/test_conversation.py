@@ -605,3 +605,51 @@ async def test_a_different_conversation_marks_nothing(
     for body in _log_bodies(aioclient_mock):
         assert "repeat" not in body["result"]
         assert "correction" not in body["result"]
+
+
+async def test_a_chat_question_after_an_action_does_not_mark(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A chat question after an action does not mark the action as a correction."""
+    async_mock_service(hass, "fan", "turn_off")
+    hass.states.async_set("fan.office", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(entity_ids=["fan.office"], record_id="rec1"),
+        _decision(route="chat", act=False, record_id="rec2"),
+    )
+    await _ask(hass, "turn off the fan")
+    model = AsyncMock(return_value=("It is noon", {}))
+
+    with patch("custom_components.voice_router.conversation.run_model", model):
+        await _ask(hass, "what time is it")
+
+    for body in _log_bodies(aioclient_mock):
+        assert "repeat" not in body["result"]
+        assert "correction" not in body["result"]
+
+
+async def test_the_second_command_acts_after_a_repeat(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A repeat marks the previous action and the new command still acts."""
+    calls = async_mock_service(hass, "fan", "turn_off")
+    hass.states.async_set("fan.office", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(entity_ids=["fan.office"], record_id="rec1"),
+        _decision(entity_ids=["fan.office"], record_id="rec2"),
+    )
+
+    await _ask(hass, "turn off the fan")
+    await _ask(hass, "turn off the fan")
+
+    assert len(calls) == 2
+    assert {
+        "record_id": "rec1",
+        "result": {"repeat": True},
+    } in _log_bodies(aioclient_mock)

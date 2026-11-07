@@ -20,7 +20,12 @@ from pathlib import Path
 import httpx
 
 from voice_router.aliases import load_word_data
-from voice_router.compare import summary
+from voice_router.compare import (
+    PROMOTION_AGREEMENT,
+    PROMOTION_N,
+    PROMOTION_P95,
+    summary,
+)
 from voice_router.house import House
 from voice_router.jev import Jev
 from voice_router.replay import replay, report
@@ -53,12 +58,21 @@ def _compare(path: Path) -> int:
     The four criteria come from the counters of the summary, so the report and
     the promotion rule cannot disagree.
     """
+    if not path.is_file():
+        print(f"voice-router: {path} is not a file", file=sys.stderr)
+        return 2
     result = summary(Store(path).all_records())
     criteria = (
-        ("commands 100 or more", result["n"] >= 100),
-        ("agreement 97% or more", result["agreement"] >= 0.97),
+        (f"commands {PROMOTION_N} or more", result["n"] >= PROMOTION_N),
+        (
+            f"agreement {PROMOTION_AGREEMENT * 100:.0f}% or more",
+            result["agreement"] >= PROMOTION_AGREEMENT,
+        ),
         ("no wrong device", result["wrong"] == 0),
-        ("p95 under 0.25s", result["p95"] < 0.25),
+        (
+            f"p95 under {PROMOTION_P95}s",
+            result["n"] > 0 and result["p95"] < PROMOTION_P95,
+        ),
     )
     print(f"n {result['n']}")
     print(f"agreement {result['agreement'] * 100:.1f}%")
@@ -66,6 +80,7 @@ def _compare(path: Path) -> int:
     print(f"p50 {result['p50']:.2f}s p95 {result['p95']:.2f}s")
     for name, passed in criteria:
         print(f"{name}: {'pass' if passed else 'fail'}")
+    print(f"promotion: {'pass' if result['promotion'] else 'fail'}")
     return 0
 
 
@@ -85,11 +100,14 @@ def _export_training(path: Path, out: Path, house_words: Path | None) -> int:
             file=sys.stderr,
         )
         return 2
+    if house_words is not None and not house_words.is_file():
+        print(f"voice-router: {house_words} is not a file", file=sys.stderr)
+        return 2
     house = House.from_sync(sync, load_word_data(house_words))
     rows = export(store.all_records(), house)
     try:
         out.mkdir(parents=True, exist_ok=True)
-    except FileExistsError:
+    except FileExistsError, NotADirectoryError:
         print(f"voice-router: {out} is not a folder", file=sys.stderr)
         return 2
     target = out / "train.kev.jsonl"

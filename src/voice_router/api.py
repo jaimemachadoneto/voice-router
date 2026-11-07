@@ -67,6 +67,12 @@ class LogBody(BaseModel):
     result: dict[str, Any]
 
 
+def _consume(task: asyncio.Task) -> None:
+    """Read the result of a task that no one awaits, so the loop stays quiet."""
+    if not task.cancelled():
+        task.exception()
+
+
 def _store_late_answer(store: Store, record_id: str, task: asyncio.Task) -> None:
     """Keep a Kev answer that arrives after the reply, and change no reply."""
     if task.cancelled():
@@ -88,12 +94,21 @@ async def _shadow(
     real answer. A late answer or an error goes to the record alone, so a slow
     or down Kev server changes no reply.
     """
-    if route != DEVICE_COMMAND or task is None:
+    if task is None:
+        return None
+    if route != DEVICE_COMMAND:
+        # The reply never holds a Kev answer for another route, so consume the
+        # task result here and keep the event loop quiet.
+        task.add_done_callback(_consume)
         return None
     try:
         answer = await asyncio.wait_for(asyncio.shield(task), timeout=SHADOW_GRACE)
     except TimeoutError:
         task.add_done_callback(lambda done: _store_late_answer(store, record_id, done))
+        return None
+    except Exception as err:  # noqa: BLE001
+        # A task that raises must not delay the reply or stop the route.
+        store.set_local(record_id, {"error": str(err)})
         return None
     store.set_local(record_id, answer)
     if "error" in answer:
@@ -192,11 +207,8 @@ def create_app(
         A later mark joins the result and does not replace it, so a repeat or
         a correction keeps the status of the action.
         """
-        existing = store.record(body.record_id)
-        if existing is None:
+        if not store.merge_result(body.record_id, body.result):
             raise HTTPException(status_code=404, detail="unknown record")
-        merged = {**(existing.get("result") or {}), **body.result}
-        store.set_result(body.record_id, merged)
         return Response(status_code=204)
 
     @app.get("/health")

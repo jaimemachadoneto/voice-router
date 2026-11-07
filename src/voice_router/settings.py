@@ -97,14 +97,17 @@ def _jev_limit() -> float:
 
 
 def _kev_limit() -> float:
-    """The Kev limit in seconds, as a number."""
+    """The Kev limit in seconds, as a number greater than 0."""
     raw = os.environ.get("VOICE_ROUTER_KEV_LIMIT", "")
     if not raw:
         return DEFAULT_KEV_LIMIT
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         raise RuntimeError("VOICE_ROUTER_KEV_LIMIT is not a number") from None
+    if value <= 0:
+        raise RuntimeError("VOICE_ROUTER_KEV_LIMIT must be greater than 0")
+    return value
 
 
 def _local_first() -> bool:

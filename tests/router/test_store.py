@@ -35,6 +35,19 @@ def test_a_result_for_an_unknown_record_is_refused(tmp_path: Path):
     assert store.set_result("missing", {}) is False
 
 
+def test_merge_result_joins_the_keys_and_refuses_an_unknown_id(tmp_path: Path):
+    store = Store(tmp_path / "router.db")
+    record_id = store.add_record({"request": {"text": "x"}, "decision": {}})
+
+    assert store.merge_result(record_id, {"status": "done"}) is True
+    assert store.merge_result(record_id, {"repeat": True}) is True
+
+    stored = store.record(record_id)
+    assert stored is not None
+    assert stored["result"] == {"status": "done", "repeat": True}
+    assert store.merge_result("missing", {}) is False
+
+
 def test_a_record_is_none_when_unknown(tmp_path: Path):
     store = Store(tmp_path / "router.db")
     assert store.record("missing") is None

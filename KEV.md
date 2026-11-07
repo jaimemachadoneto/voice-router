@@ -96,7 +96,7 @@ acts only on the offered devices, with these rules:
 
 For 2 or 3 options, the gate asks Kev. Kev acts only when `choose()` accepts a
 strong answer and the choice is one of the offered devices. A weak answer or an
-answer for a device that is not offered does not act.
+answer for a device that the router did not offer does not act.
 
 Without a Kev client, a set of 2 or 3 options does not act. A single option
 acts from the words alone.

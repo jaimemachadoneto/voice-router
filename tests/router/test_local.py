@@ -164,6 +164,18 @@ async def test_ask_local_reports_a_jev_error(house: House):
     assert result == {"error": "down"}
 
 
+@pytest.mark.parametrize("raw", ["0", "-0.1"])
+def test_the_kev_limit_must_be_greater_than_zero(
+    clean_env: pytest.MonkeyPatch, raw: str
+):
+    clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
+    clean_env.setenv("OPENROUTER_API_KEY", "test-key")
+    clean_env.setenv("VOICE_ROUTER_KEV_LIMIT", raw)
+
+    with pytest.raises(RuntimeError, match="VOICE_ROUTER_KEV_LIMIT"):
+        Settings.from_env()
+
+
 def test_the_kev_settings_are_optional(clean_env: pytest.MonkeyPatch):
     clean_env.setenv("VOICE_ROUTER_TOKEN", TOKEN)
     clean_env.setenv("OPENROUTER_API_KEY", "test-key")

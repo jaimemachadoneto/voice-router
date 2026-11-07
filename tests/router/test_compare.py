@@ -122,3 +122,25 @@ def test_the_compare_command_prints_the_criteria(tmp_path: Path, capsys):
     assert "agreement 97% or more: pass" in out
     assert "no wrong device: pass" in out
     assert "p95 under 0.25s: pass" in out
+    assert "promotion: fail" in out
+
+
+def test_the_compare_command_refuses_a_missing_db(tmp_path: Path, capsys):
+    db = tmp_path / "missing.db"
+
+    assert main(["compare", "--db", str(db)]) == 2
+
+    assert str(db) in capsys.readouterr().err
+    assert not db.exists()
+
+
+def test_the_compare_command_fails_p95_for_an_empty_log(tmp_path: Path, capsys):
+    db = tmp_path / "router.db"
+    Store(db)
+
+    assert main(["compare", "--db", str(db)]) == 0
+
+    out = capsys.readouterr().out
+    assert "n 0" in out
+    assert "p95 under 0.25s: fail" in out
+    assert "promotion: fail" in out

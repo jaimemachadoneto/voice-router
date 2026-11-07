@@ -124,7 +124,7 @@ async def _offline(
     error: str,
     local_task: asyncio.Task | None = None,
 ) -> Decision:
-    """The gate for a Jev error or a late answer: the words alone decide.
+    """The gate for a Jev error or a late answer: the words and Kev decide.
 
     The words may act on one device only. A set of two or three devices passes
     the gate and asks Kev, when a local task exists. Kev acts only on one of the

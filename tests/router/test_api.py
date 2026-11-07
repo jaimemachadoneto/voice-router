@@ -318,6 +318,16 @@ def test_route_logs_the_local_answer(settings: Settings):
     assert record["decision"]["local"]["choice"] == "light.office_lamp"
 
 
+def _wait_for_local(store: Store, record_id: str) -> dict:
+    """Poll the record until the late Kev answer arrives."""
+    for _ in range(60):
+        record = store.record(record_id)
+        if record is not None and isinstance(record["decision"].get("local"), dict):
+            return record["decision"]["local"]
+        time.sleep(0.05)
+    raise AssertionError("the local answer did not arrive")
+
+
 def test_a_slow_local_does_not_delay_the_route(settings: Settings):
     slow = replace(settings, kev_limit=1.0)
     store = Store(settings.db)
@@ -330,10 +340,8 @@ def test_a_slow_local_does_not_delay_the_route(settings: Settings):
         assert elapsed < 0.25
         body = response.json()
         assert "local" not in body
-        time.sleep(0.6)
-        record = store.record(body["record_id"])
-        assert record is not None
-        assert record["decision"]["local"]["choice"] == "light.office_lamp"
+        local = _wait_for_local(store, body["record_id"])
+        assert local["choice"] == "light.office_lamp"
 
 
 def test_a_local_error_is_logged(settings: Settings):
@@ -349,6 +357,22 @@ def test_a_local_error_is_logged(settings: Settings):
     record = store.record(body["record_id"])
     assert record is not None
     assert record["decision"]["local"] == {"error": "down"}
+
+
+def test_a_local_unexpected_error_is_logged(settings: Settings):
+    """An unexpected error of the Kev task goes to the record, not the reply."""
+    store = Store(settings.db)
+    client = make_client(settings, store, FakeLocal(error=RuntimeError("boom")))
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    response = client.post("/route", json=LIGHTS_BODY, headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "local" not in body
+    record = store.record(body["record_id"])
+    assert record is not None
+    assert record["decision"]["local"] == {"error": "boom"}
 
 
 def test_no_local_client_sends_no_kev_call(settings: Settings):
