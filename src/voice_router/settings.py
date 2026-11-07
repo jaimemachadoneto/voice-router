@@ -1,9 +1,9 @@
 """The settings of the router service, from the environment.
 
-The service reads one token, the OpenRouter key, the database path and the
-optional house words at start. The key comes from a variable or from a file, so
-a container can mount it as a secret. An error message names the variable and
-never the value, because the value is a secret.
+The service reads one token, the OpenRouter key, the database path, the
+optional house words and the optional Kev server at start. The key comes from
+a variable or from a file, so a container can mount it as a secret. An error
+message names the variable and never the value, because the value is a secret.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from pathlib import Path
 DEFAULT_DB = "/data/voice-router.db"
 DEFAULT_JEV_LIMIT = 0.8
 DEFAULT_JEV_MODEL = "~typesafe/jev-latest"
+DEFAULT_KEV_LIMIT = 0.25
+DEFAULT_KEV_MODEL = "kev"
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,10 @@ class Settings:
     house_words: Path | None = None
     jev_limit: float = DEFAULT_JEV_LIMIT
     jev_model: str = DEFAULT_JEV_MODEL
+    kev_url: str | None = None
+    kev_model: str = DEFAULT_KEV_MODEL
+    kev_limit: float = DEFAULT_KEV_LIMIT
+    local_first: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -47,6 +53,10 @@ class Settings:
             house_words=Path(house) if house else None,
             jev_limit=_jev_limit(),
             jev_model=os.environ.get("VOICE_ROUTER_JEV_MODEL", DEFAULT_JEV_MODEL),
+            kev_url=os.environ.get("VOICE_ROUTER_KEV_URL") or None,
+            kev_model=os.environ.get("VOICE_ROUTER_KEV_MODEL") or DEFAULT_KEV_MODEL,
+            kev_limit=_kev_limit(),
+            local_first=_local_first(),
         )
 
 
@@ -84,3 +94,23 @@ def _jev_limit() -> float:
         return float(raw)
     except ValueError:
         raise RuntimeError("VOICE_ROUTER_JEV_LIMIT is not a number") from None
+
+
+def _kev_limit() -> float:
+    """The Kev limit in seconds, as a number."""
+    raw = os.environ.get("VOICE_ROUTER_KEV_LIMIT", "")
+    if not raw:
+        return DEFAULT_KEV_LIMIT
+    try:
+        return float(raw)
+    except ValueError:
+        raise RuntimeError("VOICE_ROUTER_KEV_LIMIT is not a number") from None
+
+
+def _local_first() -> bool:
+    """The local-first switch: true for 1, true or yes, in any case."""
+    return os.environ.get("VOICE_ROUTER_LOCAL_FIRST", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
