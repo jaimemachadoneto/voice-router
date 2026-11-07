@@ -45,6 +45,8 @@ def _trained_version(path: Path | None) -> str:
         data = json.loads(path.read_text(encoding="utf-8"))
     except OSError, ValueError:
         return ""
+    if not isinstance(data, dict):
+        return ""
     version = data.get("alias_version", "")
     return version if isinstance(version, str) else ""
 

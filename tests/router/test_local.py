@@ -274,3 +274,20 @@ def test_the_kev_words_setting_is_read(clean_env: pytest.MonkeyPatch, tmp_path: 
     settings = Settings.from_env()
 
     assert settings.kev_words == tmp_path / "kev-words.json"
+
+
+def test_a_words_record_that_is_not_an_object_holds_no_version(tmp_path: Path):
+    words = tmp_path / "kev-words.json"
+    words.write_text(json.dumps(["sha256:trained"]), encoding="utf-8")
+    settings = Settings(
+        token=TOKEN,
+        openrouter_key="test-key",
+        db=tmp_path / "router.db",
+        kev_url="http://kev:10203/v1/systemone",
+        kev_words=words,
+    )
+
+    local = build_local(settings)
+
+    assert local is not None
+    assert local.trained_version == ""

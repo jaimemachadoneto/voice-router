@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import hmac
 from dataclasses import asdict
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -143,8 +142,10 @@ def create_app(
     words = load_word_data(settings.house_words)
     sync = store.last_sync()
     app.state.house = House.from_sync(sync, words) if sync is not None else None
-    # A restart keeps the start of the stale period of the local route.
-    app.state.stale_since = store.last_sync_at()
+    # A restart keeps the start of the stale period of the local route. The
+    # store keeps the words version of each sync, so the first sync of the
+    # current version gives the time.
+    app.state.stale_since = store.first_sync_at(words.version)
 
     def check_token(authorization: str | None = Header(default=None)) -> None:
         """Refuse a call that does not carry the token of the settings."""
@@ -160,8 +161,8 @@ def create_app(
 
         The generated part of the house words comes from this registry. The
         words load again after the write, so the alias version holds the new
-        generated part. A changed version starts the stale period of the local
-        route.
+        generated part. The store keeps the version, and the first sync of the
+        version starts the stale period of the local route.
         """
         payload = body.model_dump()
         before = load_word_data(settings.house_words)
@@ -169,9 +170,8 @@ def create_app(
         if settings.house_words is not None:
             write_generated(settings.house_words, house)
             house = House.from_sync(payload, load_word_data(settings.house_words))
-            if house.words.version != before.version:
-                app.state.stale_since = datetime.now(UTC).isoformat()
-        store.save_sync(payload)
+        store.save_sync(payload, house.words.version)
+        app.state.stale_since = store.first_sync_at(house.words.version)
         app.state.house = house
         return {
             "entities": len(house.entities),

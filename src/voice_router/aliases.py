@@ -9,12 +9,20 @@ A house file has two parts. The generated part comes from the registry at each
 sync. The reviewed part holds the words that a person added, and a sync never
 rebuilds it. A legacy flat file has no parts, so its content is the reviewed
 part.
+
+Two writers change one house file: the sync and the proposal writer. Every
+writer holds `ALIASES_LOCK` for the whole read-modify-write, or one change can
+replace the other. A write goes to a temporary file, then to the path with
+`os.replace`, so a crash leaves the old file or the new file.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
@@ -26,6 +34,12 @@ if TYPE_CHECKING:
     from voice_router.house import House
 
 ACTION_OF = {"on": "turn_on", "off": "turn_off", "set": "set", "status": "status"}
+
+# The lock of every writer of a house file. A writer that changes the file must
+# hold this lock across the whole read-modify-write. A lock around the write
+# alone is not sufficient, because a read can lose the change of the other
+# writer.
+ALIASES_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -127,6 +141,35 @@ def load_word_data(house_path: Path | None) -> WordData:
     )
 
 
+def _write_words(path: Path, text: str) -> None:
+    """Write the text to the path in one atomic replace.
+
+    The text goes to a temporary file in the same folder. The file is flushed
+    and synced first. `os.replace` then puts it on the path, so a crash leaves
+    the old file or the new file, never a truncated file. A failed write
+    removes the temporary file and keeps the old file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode if path.exists() else None
+    handle, temporary = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mode is not None:
+            os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def write_generated(path: Path, house: House) -> None:
     """Write the generated part of the house file, and keep the reviewed part.
 
@@ -135,32 +178,35 @@ def write_generated(path: Path, house: House) -> None:
     `reviewed`, so its words stay. The JSON is stable: sorted keys, a 2-space
     indent and a trailing newline. A second sync with the same registry writes
     the same bytes.
+
+    The function holds `ALIASES_LOCK` across the whole read-modify-write, so it
+    cannot lose the change of another writer. The write is atomic.
     """
-    data: dict[str, Any] = {}
-    if path.exists():
-        data = json.loads(path.read_text(encoding="utf-8"))
-    if "generated" in data or "reviewed" in data:
-        reviewed = data.get("reviewed", {})
-    else:
-        reviewed = data
-    general: dict[str, Any] = json.loads(
-        files("voice_router").joinpath("general_words.json").read_bytes()
-    )
-    generated = {
-        "areas": {
-            area: list(dict.fromkeys([area, *words]))
-            for area, words in house.registry_areas.items()
-        },
-        "entities": {
-            entity_id: list(dict.fromkeys(words))
-            for entity_id, words in house.registry_entities.items()
-        },
-        "domains": {
-            name: list(words) for name, words in general.get("domains", {}).items()
-        },
-    }
-    out = {"generated": generated, "reviewed": reviewed}
-    path.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with ALIASES_LOCK:
+        data: dict[str, Any] = {}
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+        if "generated" in data or "reviewed" in data:
+            reviewed = data.get("reviewed", {})
+        else:
+            reviewed = data
+        general: dict[str, Any] = json.loads(
+            files("voice_router").joinpath("general_words.json").read_bytes()
+        )
+        generated = {
+            "areas": {
+                area: list(words) for area, words in house.registry_areas.items()
+            },
+            "entities": {
+                entity_id: list(dict.fromkeys(words))
+                for entity_id, words in house.registry_entities.items()
+            },
+            "domains": {
+                name: list(words) for name, words in general.get("domains", {}).items()
+            },
+        }
+        out = {"generated": generated, "reviewed": reviewed}
+        _write_words(path, json.dumps(out, indent=2, sort_keys=True) + "\n")
 
 
 def actions_in(text: str, words: WordData) -> set[str]:

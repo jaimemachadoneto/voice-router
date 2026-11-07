@@ -125,6 +125,11 @@ The command writes `train.kev.jsonl` in the output folder. Each line is one
 record of the device question, in the shape of the service contract, without
 `model`, with one more field: `questions.device.label`.
 
+The command also writes `kev-words.json` beside `train.kev.jsonl`, or to the
+path in `VOICE_ROUTER_KEV_WORDS` when it is set. The file holds the words
+version of the last sync, and the router reads it through
+`VOICE_ROUTER_KEV_WORDS`.
+
 The label is the entity that the router acted on. When the router did not act
 and the device answer is `none`, the label is `none`.
 

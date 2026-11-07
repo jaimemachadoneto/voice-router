@@ -263,7 +263,7 @@ def test_an_entity_missing_from_the_house_skips_the_record():
 def _write_log(db: Path) -> None:
     """A store with the invented sync and one acted record."""
     store = Store(db)
-    store.save_sync(PAYLOAD)
+    store.save_sync(PAYLOAD, "sha256:sync-one")
     store.add_record(
         _record(
             entity_ids=["light.office_lamp"],
@@ -388,3 +388,44 @@ def test_the_export_command_refuses_house_words_that_are_not_a_file(
     assert main(command) == 2
 
     assert str(words) in capsys.readouterr().err
+
+
+def test_the_export_command_writes_the_words_version(tmp_path: Path):
+    db = tmp_path / "router.db"
+    out = tmp_path / "data"
+    _write_log(db)
+
+    assert main(["export-training", "--db", str(db), "--out", str(out)]) == 0
+
+    words = json.loads((out / "kev-words.json").read_text(encoding="utf-8"))
+    assert words == {"alias_version": "sha256:sync-one"}
+
+
+def test_a_second_export_with_no_new_sync_writes_the_same_bytes(tmp_path: Path):
+    db = tmp_path / "router.db"
+    out = tmp_path / "data"
+    _write_log(db)
+    command = ["export-training", "--db", str(db), "--out", str(out)]
+    assert main(command) == 0
+    first = (out / "kev-words.json").read_bytes()
+
+    assert main(command) == 0
+
+    assert (out / "kev-words.json").read_bytes() == first
+
+
+def test_the_export_command_writes_the_configured_words_path(
+    tmp_path: Path, monkeypatch
+):
+    db = tmp_path / "router.db"
+    out = tmp_path / "data"
+    words = tmp_path / "kev" / "kev-words.json"
+    _write_log(db)
+    monkeypatch.setenv("VOICE_ROUTER_KEV_WORDS", str(words))
+
+    assert main(["export-training", "--db", str(db), "--out", str(out)]) == 0
+
+    assert json.loads(words.read_text(encoding="utf-8")) == {
+        "alias_version": "sha256:sync-one"
+    }
+    assert not (out / "kev-words.json").exists()

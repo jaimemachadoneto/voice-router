@@ -17,12 +17,26 @@ from typing import Any
 from uuid import uuid4
 
 _SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS syncs(at TEXT, registry_hash TEXT, payload TEXT)",
+    (
+        "CREATE TABLE IF NOT EXISTS syncs("
+        "at TEXT, registry_hash TEXT, payload TEXT, alias_version TEXT)"
+    ),
     (
         "CREATE TABLE IF NOT EXISTS records("
         "id TEXT PRIMARY KEY, at TEXT, request TEXT, decision TEXT, result TEXT)"
     ),
 )
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    """Add the alias version column to a database of an earlier version.
+
+    `CREATE TABLE IF NOT EXISTS` keeps an old table as it is, so the column
+    needs its own statement. A database with the column stays unchanged.
+    """
+    columns = {row[1] for row in db.execute("PRAGMA table_info(syncs)").fetchall()}
+    if "alias_version" not in columns:
+        db.execute("ALTER TABLE syncs ADD COLUMN alias_version TEXT")
 
 
 class Store:
@@ -34,6 +48,7 @@ class Store:
         with self._lock:
             for statement in _SCHEMA:
                 self._db.execute(statement)
+            _migrate(self._db)
             self._db.commit()
 
     @staticmethod
@@ -41,15 +56,17 @@ class Store:
         """The current time in UTC, as a text that sorts by time."""
         return datetime.now(UTC).isoformat()
 
-    def save_sync(self, payload: dict[str, Any]) -> None:
-        """Keep the payload as the newest sync of the house."""
+    def save_sync(self, payload: dict[str, Any], alias_version: str = "") -> None:
+        """Keep the payload as the newest sync, with its words version."""
         with self._lock:
             self._db.execute(
-                "INSERT INTO syncs(at, registry_hash, payload) VALUES (?, ?, ?)",
+                "INSERT INTO syncs(at, registry_hash, payload, alias_version)"
+                " VALUES (?, ?, ?, ?)",
                 (
                     self._now(),
                     payload.get("registry_hash", ""),
                     json.dumps(payload),
+                    alias_version,
                 ),
             )
             self._db.commit()
@@ -62,16 +79,25 @@ class Store:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def last_sync_at(self) -> str | None:
-        """The time of the newest sync, or None when the store is empty.
+    def last_sync_version(self) -> str:
+        """The words version of the newest sync, or "" when it is absent."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT alias_version FROM syncs ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+        return (row[0] or "") if row else ""
 
-        A restart reads this time as the start of the stale period of the local
-        route. The words version is not in the sync row, so the time of the
-        last sync is the best value that the store holds.
+    def first_sync_at(self, alias_version: str) -> str | None:
+        """The time of the first sync that wrote this words version.
+
+        This time starts the stale period of the local route. The newest sync
+        can change no word, so it is not this time. None means that no sync
+        wrote the version, for example an old row with no version.
         """
         with self._lock:
             row = self._db.execute(
-                "SELECT at FROM syncs ORDER BY rowid DESC LIMIT 1"
+                "SELECT at FROM syncs WHERE alias_version = ? ORDER BY rowid LIMIT 1",
+                (alias_version,),
             ).fetchone()
         return row[0] if row else None
 

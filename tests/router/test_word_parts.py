@@ -6,16 +6,17 @@ touch a real registry.
 """
 
 import json
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from voice_router.aliases import load_word_data, write_generated
+from voice_router.aliases import ALIASES_LOCK, load_word_data, write_generated
 from voice_router.api import create_app
 from voice_router.house import House
-from voice_router.jev import Answer, Jev, Question
+from voice_router.jev import Answer, Jev, JevError, Question
 from voice_router.settings import Settings
 from voice_router.store import Store
 
@@ -81,15 +82,18 @@ LIGHTS_BODY = {
 
 
 class FakeJev(Jev):
-    """A Jev that answers a device command and picks one device."""
+    """A Jev that answers a device command, picks one device or fails."""
 
-    def __init__(self, device: str = "none"):
+    def __init__(self, device: str = "none", error: Exception | None = None):
         # The real client is not used, so the fake sets no key and no URL.
         self.device = device
+        self.error = error
 
     async def choices(
         self, state: str | dict, questions: Sequence[Question]
     ) -> dict[str, Answer]:
+        if self.error is not None:
+            raise self.error
         answers = {
             "route": Answer(
                 "device_command", {"device_command": 1.0}, 1.0, 0.01, 10, 0.0
@@ -156,8 +160,8 @@ def test_a_sync_with_a_new_area_writes_the_generated_part(tmp_path: Path):
 
     assert response.status_code == 200
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["generated"]["areas"]["Office"] == ["Office", "office", "study"]
-    assert data["generated"]["areas"]["Entry"] == ["Entry"]
+    assert data["generated"]["areas"]["Office"] == ["office", "study"]
+    assert data["generated"]["areas"]["Entry"] == []
     assert data["generated"]["entities"]["light.office_lamp"] == [
         "Office Lamp",
         "reading lamp",
@@ -326,3 +330,173 @@ def test_the_stale_rule_only_changes_the_local_route(
     assert body["act"] is False
     assert body["reason"] != "stale"
     assert body["stale_since"] is None
+
+
+def _office_house() -> House:
+    """The invented house, with no house file."""
+    return House.from_sync(PAYLOAD, load_word_data(None))
+
+
+def test_the_write_keeps_the_same_bytes(tmp_path: Path):
+    path = tmp_path / "house_words.json"
+    path.write_text(
+        json.dumps({"reviewed": {"domains": {"light": ["abajur"]}}}),
+        encoding="utf-8",
+    )
+    house = _office_house()
+
+    write_generated(path, house)
+    first = path.read_bytes()
+    write_generated(path, house)
+
+    assert path.read_bytes() == first
+    assert json.loads(first)["generated"]["entities"]
+
+
+def test_a_write_creates_a_missing_parent_directory(tmp_path: Path):
+    path = tmp_path / "nested" / "words" / "house_words.json"
+
+    write_generated(path, _office_house())
+
+    assert json.loads(path.read_text(encoding="utf-8"))["generated"]["entities"]
+
+
+def test_the_temporary_file_does_not_remain_after_a_write(tmp_path: Path):
+    path = tmp_path / "house_words.json"
+
+    write_generated(path, _office_house())
+
+    assert [item.name for item in tmp_path.iterdir()] == ["house_words.json"]
+
+
+def test_a_failed_replace_keeps_the_original_file(tmp_path: Path, monkeypatch):
+    path = tmp_path / "house_words.json"
+    original = {"reviewed": {"domains": {"light": ["abajur"]}}}
+    path.write_text(json.dumps(original), encoding="utf-8")
+    before = path.read_bytes()
+
+    def fail_replace(source: str, target: Path) -> None:
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr("voice_router.aliases.os.replace", fail_replace)
+
+    with pytest.raises(OSError):
+        write_generated(path, _office_house())
+
+    assert path.read_bytes() == before
+    assert json.loads(path.read_text(encoding="utf-8")) == original
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_write_generated_holds_the_lock(tmp_path: Path):
+    path = tmp_path / "house_words.json"
+    started = threading.Event()
+    done = threading.Event()
+
+    def run() -> None:
+        started.set()
+        write_generated(path, _office_house())
+        done.set()
+
+    with ALIASES_LOCK:
+        thread = threading.Thread(target=run)
+        thread.start()
+        assert started.wait(timeout=1)
+        assert done.wait(timeout=0.05) is False
+    thread.join(timeout=2)
+
+    assert done.is_set()
+
+
+def test_two_writers_keep_both_parts(tmp_path: Path):
+    path = tmp_path / "house_words.json"
+    path.write_text(
+        json.dumps({"reviewed": {"domains": {"light": []}}}), encoding="utf-8"
+    )
+    failures: list[BaseException] = []
+
+    def write_generated_many() -> None:
+        try:
+            for _ in range(20):
+                write_generated(path, _office_house())
+        except (OSError, ValueError) as err:
+            failures.append(err)
+
+    def add_reviewed_many() -> None:
+        try:
+            for index in range(20):
+                with ALIASES_LOCK:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    domains = data.setdefault("reviewed", {}).setdefault("domains", {})
+                    domains.setdefault("light", []).append(f"word{index}")
+                    path.write_text(
+                        json.dumps(data, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+        except (OSError, ValueError) as err:
+            failures.append(err)
+
+    threads = [
+        threading.Thread(target=write_generated_many),
+        threading.Thread(target=add_reviewed_many),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert failures == []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["generated"]["entities"]["light.office_lamp"] == [
+        "Office Lamp",
+        "reading lamp",
+    ]
+    assert data["reviewed"]["domains"]["light"] == [
+        f"word{index}" for index in range(20)
+    ]
+
+
+def test_a_restart_reports_the_first_sync_of_the_current_version(tmp_path: Path):
+    path = tmp_path / "house_words.json"
+    path.write_text("{}", encoding="utf-8")
+    settings = make_settings(tmp_path, path)
+    first_client = make_client(settings, FakeLocal(trained_version="sha256:trained"))
+    version = first_client.post("/sync", json=PAYLOAD, headers=HEADERS).json()[
+        "alias_version"
+    ]
+    # A second sync with the same registry changes no word.
+    first_client.post("/sync", json=PAYLOAD, headers=HEADERS)
+    first = Store(settings.db).first_sync_at(version)
+    assert first is not None
+
+    restarted = make_client(settings, FakeLocal(trained_version="sha256:trained"))
+    body = restarted.post("/route", json=LIGHTS_BODY, headers=HEADERS).json()
+
+    assert body["reason"] == "stale"
+    assert body["stale_since"] == first
+
+
+def test_offline_a_stale_local_route_does_not_act(tmp_path: Path):
+    path = tmp_path / "house_words.json"
+    path.write_text("{}", encoding="utf-8")
+    settings = make_settings(tmp_path, path)
+    store = Store(settings.db)
+    client = make_client(
+        settings,
+        FakeLocal(trained_version="sha256:trained"),
+        FakeJev(error=JevError("down")),
+    )
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    body = client.post(
+        "/route",
+        json={**LIGHTS_BODY, "text": "turn off the office light"},
+        headers=HEADERS,
+    ).json()
+
+    assert body["act"] is False
+    assert body["reason"] == "stale"
+    record = store.record(body["record_id"])
+    assert record is not None
+    # The shadow answer is still recorded.
+    assert record["decision"]["local"]["choice"] == "light.office_lamp"

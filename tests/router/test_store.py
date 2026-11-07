@@ -1,5 +1,6 @@
 """The store: the last sync and the log of requests, in SQLite."""
 
+import sqlite3
 from pathlib import Path
 
 from voice_router.store import Store
@@ -70,3 +71,46 @@ def test_all_records_reads_the_log(tmp_path: Path):
     assert records[1]["request"] == {"text": "two"}
     assert records[1]["decision"] == {"route": "device_command"}
     assert records[1]["result"] is None
+
+
+def test_the_sync_row_holds_the_alias_version(tmp_path: Path):
+    store = Store(tmp_path / "router.db")
+
+    store.save_sync(PAYLOAD, "sha256:one")
+
+    assert store.last_sync_version() == "sha256:one"
+
+
+def test_a_store_with_no_sync_holds_no_alias_version(tmp_path: Path):
+    store = Store(tmp_path / "router.db")
+
+    assert store.last_sync_version() == ""
+    assert store.first_sync_at("sha256:one") is None
+
+
+def test_the_first_sync_of_a_version_gives_the_stale_time(tmp_path: Path):
+    store = Store(tmp_path / "router.db")
+    store.save_sync(PAYLOAD, "sha256:old")
+    store.save_sync(PAYLOAD, "sha256:current")
+    first = store.first_sync_at("sha256:current")
+    assert first is not None
+
+    # An idempotent sync changes nothing, so it starts no stale period.
+    store.save_sync(PAYLOAD, "sha256:current")
+
+    assert store.first_sync_at("sha256:current") == first
+
+
+def test_an_existing_database_gets_the_alias_version_column(tmp_path: Path):
+    path = tmp_path / "router.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE syncs(at TEXT, registry_hash TEXT, payload TEXT)")
+    db.execute("INSERT INTO syncs VALUES ('2026-01-01', 'sha256:abc', '{}')")
+    db.commit()
+    db.close()
+
+    store = Store(path)
+
+    assert store.last_sync_version() == ""
+    store.save_sync(PAYLOAD, "sha256:new")
+    assert store.last_sync_version() == "sha256:new"
