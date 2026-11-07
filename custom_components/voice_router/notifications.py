@@ -40,11 +40,31 @@ class NotifyClient(Protocol):
         ...
 
 
-def notification_id(key: str) -> str:
-    """Make a stable notification id from the key of the item.
+def _entry_prefix(entry_id: str) -> str:
+    """The start of the id of each notification of one config entry.
 
-    The truncated hash keeps two keys apart also when they differ only in a
-    non-Latin word. The same key gives the same id after a restart.
+    A Home Assistant installation can hold two routers. The entry hash keeps
+    the ids of the two entries apart.
+    """
+    digest = hashlib.sha256(entry_id.encode()).hexdigest()[:8]
+    return f"{NOTIFICATION_PREFIX}{digest}_"
+
+
+def notification_id(entry_id: str, key: str) -> str:
+    """Make a stable notification id from the entry id and the key of the item.
+
+    The truncated hashes keep two keys apart also when they differ only in a
+    non-Latin word. The same entry and key give the same id after a restart.
+    """
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return f"{_entry_prefix(entry_id)}{digest}"
+
+
+def _legacy_id(key: str) -> str:
+    """Make the id of the scheme before the entry scope.
+
+    An old id has no entry part. Only the stored items of an entry can name
+    it, so the dismissal examines the stored items to find it.
     """
     digest = hashlib.sha256(key.encode()).hexdigest()[:16]
     return f"{NOTIFICATION_PREFIX}{digest}"
@@ -67,22 +87,40 @@ def _text(item: dict[str, Any], language: str) -> tuple[str, str]:
     return title, body
 
 
-def _shown_ids(items: list[dict[str, Any]]) -> set[str]:
+def _shown_ids(entry_id: str, items: list[dict[str, Any]]) -> set[str]:
     """The notification ids of the items of a known kind."""
     return {
-        notification_id(item["key"])
+        notification_id(entry_id, item["key"])
         for item in items
         if item.get("kind") in _PHRASE_KEYS
     }
 
 
-def _current_ids(hass: HomeAssistant) -> set[str]:
-    """The ids of the persistent notifications of this component."""
+def _stored_ids(entry_id: str, items: list[dict[str, Any]]) -> set[str]:
+    """The ids of the stored items, under the current and the old scheme.
+
+    The stored set of an entry is the only record of its old ids, because an
+    old id has no entry part.
+    """
+    ids: set[str] = set()
+    for item in items:
+        if item.get("kind") not in _PHRASE_KEYS:
+            continue
+        ids.add(notification_id(entry_id, item["key"]))
+        ids.add(_legacy_id(item["key"]))
+    return ids
+
+
+def _current_ids(hass: HomeAssistant, entry_id: str) -> set[str]:
+    """The ids of the persistent notifications of one config entry."""
     notifications = hass.data.get(persistent_notification.DOMAIN) or {}
-    return {key for key in notifications if key.startswith(NOTIFICATION_PREFIX)}
+    prefix = _entry_prefix(entry_id)
+    return {key for key in notifications if key.startswith(prefix)}
 
 
-async def async_show(hass: HomeAssistant, items: list[dict[str, Any]]) -> None:
+async def async_show(
+    hass: HomeAssistant, entry: ConfigEntry, items: list[dict[str, Any]]
+) -> None:
     """Create or update one notification for each item of a known kind."""
     language = _language(hass)
     for item in items:
@@ -97,28 +135,29 @@ async def async_show(hass: HomeAssistant, items: list[dict[str, Any]]) -> None:
             hass,
             body,
             title=title,
-            notification_id=notification_id(item["key"]),
+            notification_id=notification_id(entry.entry_id, item["key"]),
         )
 
 
 async def async_reconcile(
     hass: HomeAssistant,
     *,
+    entry: ConfigEntry,
     items: list[dict[str, Any]],
     shown: list[dict[str, Any]],
 ) -> None:
     """Show the items and dismiss the notifications that no longer wait.
 
     The returned set is the truth: a notification whose key the set does not
-    hold no longer waits, so it goes. The actual notifications go too, so an
-    id of an old scheme does not stay. The keyword-only arguments make a swap
-    of the two lists a TypeError.
+    hold no longer waits, so it goes. The dismissal examines the stored items
+    of the entry and the notifications of the entry, so an old id does not
+    stay. The keyword-only arguments make a swap of the two lists a TypeError.
     """
-    await async_show(hass, items)
-    wanted = _shown_ids(items)
-    for shown_id in _shown_ids(shown) | _current_ids(hass):
-        if shown_id not in wanted:
-            persistent_notification.async_dismiss(hass, shown_id)
+    await async_show(hass, entry, items)
+    wanted = _shown_ids(entry.entry_id, items)
+    owned = _stored_ids(entry.entry_id, shown) | _current_ids(hass, entry.entry_id)
+    for shown_id in owned - wanted:
+        persistent_notification.async_dismiss(hass, shown_id)
 
 
 def _store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
@@ -136,7 +175,9 @@ def _items(data: Any) -> list[dict[str, Any]]:
     return [item for item in items if isinstance(item, dict)]
 
 
-async def _async_restore(hass: HomeAssistant, store: Store) -> list[dict[str, Any]]:
+async def _async_restore(
+    hass: HomeAssistant, entry: ConfigEntry, store: Store
+) -> list[dict[str, Any]]:
     """Load the stored items and show them again. A fault writes a warning."""
     try:
         data = await store.async_load()
@@ -145,7 +186,7 @@ async def _async_restore(hass: HomeAssistant, store: Store) -> list[dict[str, An
         _LOGGER.warning("The stored notifications did not load: %s", error)
         return []
     items = _items(data)
-    await async_show(hass, items)
+    await async_show(hass, entry, items)
     return items
 
 
@@ -162,7 +203,7 @@ async def async_start_notifications(
 ) -> None:
     """Restore the shown items, poll now, then poll at each interval."""
     store = _store(hass, entry)
-    shown = await _async_restore(hass, store)
+    shown = await _async_restore(hass, entry, store)
 
     async def _async_poll(_now: datetime) -> None:
         """Reconcile the notifications with the complete set from the router.
@@ -177,7 +218,7 @@ async def async_start_notifications(
         except RouterUnavailable as error:
             _LOGGER.warning("The router did not give the notifications: %s", error)
             return
-        await async_reconcile(hass, items=items, shown=shown)
+        await async_reconcile(hass, entry=entry, items=items, shown=shown)
         shown = items
         await _async_save(store, items)
 

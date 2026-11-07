@@ -28,6 +28,7 @@ from custom_components.voice_router.const import (
     NOTIFY_MINUTES,
 )
 from custom_components.voice_router.notifications import (
+    async_reconcile,
     async_show,
     notification_id,
 )
@@ -35,9 +36,15 @@ from custom_components.voice_router.router_client import RouterClient, RouterUna
 
 LOGGER_NAME = "custom_components.voice_router.notifications"
 
-REPEATED_ID = "voice_router_3ee3f9ab79f0c194"
-DAILY_ID = "voice_router_29809bd7bf953700"
-THIRD_ID = "voice_router_0190e7c7654cfb2d"
+ENTRY_ID = "01J0VOICE0000000000000000"
+OTHER_ENTRY_ID = "01J0VOICE0000000000000001"
+
+# sha256(ENTRY_ID)[:8] is 97120f7a. sha256(OTHER_ENTRY_ID)[:8] is fb261218.
+REPEATED_ID = "voice_router_97120f7a_3ee3f9ab79f0c194"
+DAILY_ID = "voice_router_97120f7a_29809bd7bf953700"
+THIRD_ID = "voice_router_97120f7a_0190e7c7654cfb2d"
+OTHER_REPEATED_ID = "voice_router_fb261218_3ee3f9ab79f0c194"
+OTHER_DAILY_ID = "voice_router_fb261218_29809bd7bf953700"
 
 REPEATED = {
     "key": "repeated:luz:light.kitchen",
@@ -64,13 +71,19 @@ THIRD = {
 }
 
 
+def _entry(entry_id: str, url: str = "http://router") -> MockConfigEntry:
+    """Make the config entry of one router."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        entry_id=entry_id,
+        data={CONF_ROUTER_URL: url, CONF_ROUTER_TOKEN: "token"},
+    )
+
+
 @pytest.fixture
 def entry() -> MockConfigEntry:
     """Make the config entry of the component."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_ROUTER_URL: "http://router", CONF_ROUTER_TOKEN: "token"},
-    )
+    return _entry(ENTRY_ID)
 
 
 def _notifications(hass: HomeAssistant) -> dict[str, Any]:
@@ -102,9 +115,11 @@ def _stored_items(
     return storage[key]["data"]["items"]
 
 
-async def test_a_repeated_item_makes_one_notification(hass: HomeAssistant) -> None:
+async def test_a_repeated_item_makes_one_notification(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
     """A repeated item makes one notification with the word and the count."""
-    await async_show(hass, [REPEATED])
+    await async_show(hass, entry, [REPEATED])
 
     notifications = _notifications(hass)
     assert list(notifications) == [REPEATED_ID]
@@ -114,32 +129,34 @@ async def test_a_repeated_item_makes_one_notification(hass: HomeAssistant) -> No
 
 
 def test_the_id_comes_from_a_truncated_hash() -> None:
-    """The id is the prefix and the first 16 hex characters of the hash."""
-    assert notification_id("repeated:luz:light.kitchen") == REPEATED_ID
+    """The id is the prefix, the entry hash and the key hash."""
+    assert notification_id(ENTRY_ID, "repeated:luz:light.kitchen") == REPEATED_ID
 
 
 def test_two_non_latin_words_give_two_ids() -> None:
     """Two keys that differ only in a non-Latin word give two ids."""
-    first = notification_id("repeated:свет:light.kitchen")
-    second = notification_id("repeated:тьма:light.kitchen")
+    first = notification_id(ENTRY_ID, "repeated:свет:light.kitchen")
+    second = notification_id(ENTRY_ID, "repeated:тьма:light.kitchen")
 
     assert first != second
 
 
 async def test_a_second_poll_updates_the_same_notification(
-    hass: HomeAssistant,
+    hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
     """The same key does not add a second notification."""
-    await async_show(hass, [REPEATED])
-    await async_show(hass, [REPEATED])
+    await async_show(hass, entry, [REPEATED])
+    await async_show(hass, entry, [REPEATED])
 
     notifications = _notifications(hass)
     assert list(notifications) == [REPEATED_ID]
 
 
-async def test_a_daily_item_makes_one_notification(hass: HomeAssistant) -> None:
+async def test_a_daily_item_makes_one_notification(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
     """A daily item makes one notification with the count."""
-    await async_show(hass, [DAILY])
+    await async_show(hass, entry, [DAILY])
 
     notifications = _notifications(hass)
     assert list(notifications) == [DAILY_ID]
@@ -147,7 +164,7 @@ async def test_a_daily_item_makes_one_notification(hass: HomeAssistant) -> None:
 
 
 async def test_an_unknown_kind_logs_a_warning_and_shows_the_other(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    hass: HomeAssistant, entry: MockConfigEntry, caplog: pytest.LogCaptureFixture
 ) -> None:
     """An unknown kind writes a warning, and the known item still shows."""
     unknown = {
@@ -159,7 +176,7 @@ async def test_an_unknown_kind_logs_a_warning_and_shows_the_other(
     }
 
     with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
-        await async_show(hass, [unknown, REPEATED])
+        await async_show(hass, entry, [unknown, REPEATED])
 
     assert list(_notifications(hass)) == [REPEATED_ID]
     warnings = [
@@ -171,12 +188,14 @@ async def test_an_unknown_kind_logs_a_warning_and_shows_the_other(
     assert "future" in warnings[0].getMessage()
 
 
-async def test_the_three_languages_give_three_bodies(hass: HomeAssistant) -> None:
+async def test_the_three_languages_give_three_bodies(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
     """The body follows the language of the Home Assistant configuration."""
     bodies = []
     for language in ("pt", "en", "es"):
         hass.config.language = language
-        await async_show(hass, [REPEATED])
+        await async_show(hass, entry, [REPEATED])
         bodies.append(_notifications(hass)[REPEATED_ID]["message"])
 
     assert len(set(bodies)) == 3
@@ -333,22 +352,108 @@ async def test_a_decided_item_is_dismissed_and_not_restored(
 
 
 async def test_a_notification_of_an_old_scheme_is_dismissed(
-    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    aioclient_mock,
+    hass_storage: dict[str, Any],
 ) -> None:
-    """A notification of this component that no item names goes."""
+    """The old id of a stored item goes, and the item shows under the new id."""
     aioclient_mock.post("http://router/sync", json={})
     aioclient_mock.get("http://router/notifications", json={"items": [REPEATED]})
+    hass_storage[f"{DOMAIN}.notifications.{entry.entry_id}"] = {
+        "version": 1,
+        "data": {"items": [REPEATED]},
+    }
     persistent_notification.async_create(
         hass,
         "old message",
         title="old title",
-        notification_id="voice_router_repeated_luz_light_kitchen",
+        notification_id="voice_router_3ee3f9ab79f0c194",
     )
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
 
     assert list(_notifications(hass)) == [REPEATED_ID]
+
+
+async def test_two_entries_keep_their_notices(
+    hass: HomeAssistant, aioclient_mock, hass_storage: dict[str, Any]
+) -> None:
+    """Two entries keep one notice each after both poll.
+
+    The timers of the two entries fire together. The poll of one entry must
+    not dismiss the notice of the other entry.
+    """
+    aioclient_mock.post("http://router/sync", json={})
+    aioclient_mock.get("http://router/notifications", json={"items": [REPEATED]})
+    aioclient_mock.post("http://router-two/sync", json={})
+    aioclient_mock.get("http://router-two/notifications", json={"items": [DAILY]})
+    first = _entry(ENTRY_ID)
+    second = _entry(OTHER_ENTRY_ID, "http://router-two")
+    first.add_to_hass(hass)
+    second.add_to_hass(hass)
+
+    # The setup of the first entry loads the component and both entries.
+    assert await hass.config_entries.async_setup(first.entry_id)
+    await hass.async_block_till_done()
+
+    assert set(_notifications(hass)) == {REPEATED_ID, OTHER_DAILY_ID}
+    assert _stored_items(hass_storage, first) == [REPEATED]
+    assert _stored_items(hass_storage, second) == [DAILY]
+
+
+async def test_an_entry_dismisses_its_own_item(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """An entry dismisses its own notice when the router stops returning it."""
+    await async_show(hass, entry, [REPEATED])
+
+    await async_reconcile(hass, entry=entry, items=[], shown=[REPEATED])
+
+    assert REPEATED_ID not in _notifications(hass)
+
+
+async def test_an_entry_keeps_the_notice_of_the_other_entry(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """An entry does not dismiss an id that belongs to the other entry."""
+    other = _entry(OTHER_ENTRY_ID)
+    await async_show(hass, other, [REPEATED])
+
+    await async_reconcile(hass, entry=entry, items=[], shown=[])
+
+    assert list(_notifications(hass)) == [OTHER_REPEATED_ID]
+
+
+async def test_the_id_is_unchanged_across_a_restart(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    aioclient_mock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The same entry and key give the same id after a restart."""
+    aioclient_mock.post("http://router/sync", json={})
+    aioclient_mock.get("http://router/notifications", json={"items": [REPEATED]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert set(_notifications(hass)) == {REPEATED_ID}
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    _notifications(hass).clear()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert set(_notifications(hass)) == {REPEATED_ID}
+
+
+def test_two_entries_with_the_same_key_get_two_ids() -> None:
+    """Two entries with the same key get two ids."""
+    first = notification_id(ENTRY_ID, REPEATED["key"])
+    second = notification_id(OTHER_ENTRY_ID, REPEATED["key"])
+
+    assert first == REPEATED_ID
+    assert second == OTHER_REPEATED_ID
+    assert first != second
 
 
 async def test_a_corrupt_store_does_not_break_setup(
