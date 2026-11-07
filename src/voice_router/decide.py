@@ -164,8 +164,8 @@ async def _offline(
         return _no_act(f, DEVICE_COMMAND, "words", "offline_gate", {}, {"error": error})
     answer = await asyncio.shield(local_task)
     choice = answer.get("choice")
-    if choice not in options and choice != NONE:
-        # A choice outside the offer is not one of the devices of the command.
+    if "error" in answer or (choice not in options and choice != NONE):
+        # A failed or outside answer is not one of the devices of the command.
         return _no_act(
             f, DEVICE_COMMAND, "local", "low_confidence", {}, {"error": error}, answer
         )
@@ -249,15 +249,13 @@ async def decide(
         return _no_act(f, DEVICE_COMMAND, "jev", "no_action_word", confidence, record)
 
     device = answers.get("device")
-    if device is not None and device.choice not in options and device.choice != NONE:
-        # A choice outside the offer is not one of the devices of the command.
-        return _no_act(f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record)
     if local_first and local_task is not None and len(options) >= 2:
         answer = await asyncio.shield(local_task)
         choice = answer.get("choice")
+        # A failed or outside answer is no answer, so the Jev device stays.
         local_chosen = (
             choose(options, answer.get("probabilities"))
-            if choice in options or choice == NONE
+            if "error" not in answer and (choice in options or choice == NONE)
             else []
         )
         if local_chosen:
@@ -280,6 +278,9 @@ async def decide(
                 jev=record,
                 local=answer,
             )
+    if device is not None and device.choice not in options and device.choice != NONE:
+        # A choice outside the offer is not one of the devices of the command.
+        return _no_act(f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record)
     chosen = choose(options, device.probabilities if device is not None else None)
     if not chosen:
         return _no_act(f, DEVICE_COMMAND, "jev", "low_confidence", confidence, record)
