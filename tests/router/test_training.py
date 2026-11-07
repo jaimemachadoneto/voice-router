@@ -5,16 +5,16 @@ or room goes into the repository. Each record has the shape that the store
 writes.
 """
 
+import json
 from pathlib import Path
 
 from tests.router.test_decide import PAYLOAD
 from voice_router.aliases import load_word_data
 from voice_router.cli import main
 from voice_router.house import House
-from voice_router.questions import INSTRUCTIONS, NONE_TEXT
+from voice_router.questions import INSTRUCTIONS, device_question
 from voice_router.store import Store
 from voice_router.training import export
-from voice_router.words import entity_text
 
 
 def _house() -> House:
@@ -28,29 +28,31 @@ def _record(
     act: bool = True,
     entity_ids: list[str] | None = None,
     options: list[str] | None = None,
+    device: str | None = None,
+    local: dict | None = None,
     result: dict | None = None,
 ) -> dict:
     """One invented record with the shape of the log."""
+    decision = {
+        "route": "device_command",
+        "act": act,
+        "entity_ids": entity_ids or [],
+        "options": options,
+    }
+    if device is not None:
+        decision["jev"] = {"device": {"choice": device}}
+    if local is not None:
+        decision["local"] = local
     return {
         "request": {"text": text, "room": room},
-        "decision": {
-            "route": "device_command",
-            "act": act,
-            "entity_ids": entity_ids or [],
-            "options": options,
-        },
+        "decision": decision,
         "result": result,
     }
 
 
 def _criteria(house: House, options: list[str]) -> dict[str, str]:
     """The criteria that the device question holds for the options."""
-    criteria = {
-        entity_id: entity_text(house.entities[entity_id], house.area_aliases)
-        for entity_id in options
-    }
-    criteria["none"] = NONE_TEXT
-    return criteria
+    return device_question(options, house).criteria
 
 
 def test_an_acted_single_entity_gives_one_record():
@@ -100,11 +102,45 @@ def test_a_plural_act_gives_one_record_for_each_entity():
 def test_a_refused_device_command_gives_a_none_label():
     house = _house()
     options = ["light.office_lamp", "light.office_ceiling"]
-    rows = export([_record(act=False, options=options)], house)
+    rows = export(
+        [_record(act=False, options=options, device="none")],
+        house,
+    )
     assert len(rows) == 1
     question = rows[0]["questions"]["device"]
     assert question["label"] == "none"
     assert question["criteria"] == _criteria(house, options)
+
+
+def test_a_refused_command_with_a_device_choice_gives_no_record():
+    house = _house()
+    rows = export(
+        [
+            _record(
+                act=False,
+                options=["light.office_lamp", "light.office_ceiling"],
+                device="light.office_lamp",
+            )
+        ],
+        house,
+    )
+    assert rows == []
+
+
+def test_a_local_none_gives_a_none_label():
+    house = _house()
+    options = ["light.office_lamp", "light.office_ceiling"]
+    rows = export(
+        [
+            _record(
+                act=False,
+                options=options,
+                local={"choice": "none", "probabilities": {"none": 0.9}},
+            )
+        ],
+        house,
+    )
+    assert [row["questions"]["device"]["label"] for row in rows] == ["none"]
 
 
 def test_a_repeated_action_gives_no_record():
@@ -151,9 +187,8 @@ def test_an_entity_missing_from_the_house_skips_the_record():
     assert rows == []
 
 
-def test_the_export_command_writes_the_rows(tmp_path: Path, capsys):
-    db = tmp_path / "router.db"
-    out = tmp_path / "data"
+def _write_log(db: Path) -> None:
+    """A store with the invented sync and one acted record."""
     store = Store(db)
     store.save_sync(PAYLOAD)
     store.add_record(
@@ -163,14 +198,67 @@ def test_the_export_command_writes_the_rows(tmp_path: Path, capsys):
         )
     )
 
+
+def _write_house_words(path: Path) -> None:
+    """A house words file with one alias of an invented entity."""
+    path.write_text(
+        json.dumps({"entities": {"light.office_lamp": ["desk light"]}}),
+        encoding="utf-8",
+    )
+
+
+def test_the_export_command_writes_the_rows(tmp_path: Path, capsys):
+    db = tmp_path / "router.db"
+    out = tmp_path / "data"
+    _write_log(db)
+
     assert main(["export-training", "--db", str(db), "--out", str(out)]) == 0
 
     lines = (out / "train.kev.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert '"label": "light.office_lamp"' in lines[0]
     printed = capsys.readouterr().out
-    assert "1" in printed
-    assert str(out / "train.kev.jsonl") in printed
+    assert f"1 record written to {out / 'train.kev.jsonl'}" in printed
+
+
+def test_the_export_command_reads_the_house_words(tmp_path: Path):
+    db = tmp_path / "router.db"
+    out = tmp_path / "data"
+    words = tmp_path / "house_words.json"
+    _write_log(db)
+    _write_house_words(words)
+
+    command = [
+        "export-training",
+        "--db",
+        str(db),
+        "--out",
+        str(out),
+        "--house-words",
+        str(words),
+    ]
+    assert main(command) == 0
+
+    row = json.loads((out / "train.kev.jsonl").read_text(encoding="utf-8"))
+    criteria = row["questions"]["device"]["criteria"]
+    assert "desk light" in criteria["light.office_lamp"]
+
+
+def test_the_export_command_reads_the_house_words_from_the_env(
+    tmp_path: Path, monkeypatch
+):
+    db = tmp_path / "router.db"
+    out = tmp_path / "data"
+    words = tmp_path / "house_words.json"
+    _write_log(db)
+    _write_house_words(words)
+    monkeypatch.setenv("VOICE_ROUTER_HOUSE_WORDS", str(words))
+
+    assert main(["export-training", "--db", str(db), "--out", str(out)]) == 0
+
+    row = json.loads((out / "train.kev.jsonl").read_text(encoding="utf-8"))
+    criteria = row["questions"]["device"]["criteria"]
+    assert "desk light" in criteria["light.office_lamp"]
 
 
 def test_the_export_command_needs_a_sync(tmp_path: Path, capsys):
@@ -180,3 +268,14 @@ def test_the_export_command_needs_a_sync(tmp_path: Path, capsys):
     assert main(["export-training", "--db", str(db), "--out", str(tmp_path)]) == 2
 
     assert "sync" in capsys.readouterr().err
+
+
+def test_the_export_command_refuses_an_out_file(tmp_path: Path, capsys):
+    db = tmp_path / "router.db"
+    out = tmp_path / "data"
+    _write_log(db)
+    out.write_text("not a folder", encoding="utf-8")
+
+    assert main(["export-training", "--db", str(db), "--out", str(out)]) == 2
+
+    assert str(out) in capsys.readouterr().err

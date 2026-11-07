@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -68,12 +69,13 @@ def _compare(path: Path) -> int:
     return 0
 
 
-def _export_training(path: Path, out: Path) -> int:
+def _export_training(path: Path, out: Path, house_words: Path | None) -> int:
     """Write the next training data of the device question from the log.
 
     The house of the newest sync gives the text of each entity. Without a sync
     the criteria cannot be exact, so the command stops with an error that names
-    the sync.
+    the sync. The house words add the private words of the house, as the router
+    does at runtime.
     """
     store = Store(path)
     sync = store.last_sync()
@@ -83,12 +85,17 @@ def _export_training(path: Path, out: Path) -> int:
             file=sys.stderr,
         )
         return 2
-    house = House.from_sync(sync, load_word_data(None))
+    house = House.from_sync(sync, load_word_data(house_words))
     rows = export(store.all_records(), house)
-    out.mkdir(parents=True, exist_ok=True)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        print(f"voice-router: {out} is not a folder", file=sys.stderr)
+        return 2
     target = out / "train.kev.jsonl"
     target.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-    print(f"{len(rows)} records written to {target}")
+    noun = "record" if len(rows) == 1 else "records"
+    print(f"{len(rows)} {noun} written to {target}")
     return 0
 
 
@@ -134,11 +141,18 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument(
         "--out", type=Path, required=True, help="the folder of the training data."
     )
+    house_words = os.environ.get("VOICE_ROUTER_HOUSE_WORDS")
+    export_parser.add_argument(
+        "--house-words",
+        type=Path,
+        default=Path(house_words) if house_words else None,
+        help="the words of the house; the default is VOICE_ROUTER_HOUSE_WORDS.",
+    )
     args = parser.parse_args(argv)
     if args.command == "compare":
         return _compare(args.db)
     if args.command == "export-training":
-        return _export_training(args.db, args.out)
+        return _export_training(args.db, args.out, args.house_words)
     try:
         key = _openrouter_key()
     except RuntimeError as err:
