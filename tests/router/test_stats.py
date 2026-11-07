@@ -150,16 +150,19 @@ def test_a_pending_result_reads_as_confirmed_or_waiting():
         _record("r3", result={"status": "done"}),
         _record("r4", act=False),
         _record("r5", result={"pending": True, "status": "cancelled"}),
+        _record("r6", result={"status": "builtin"}),
     ]
 
     outcomes = {row["id"]: row["outcome"] for row in summary(records)["recent"]}
 
+    # A refused action and a delegated action must not read as done or waiting.
     assert outcomes == {
         "r1": "confirmed",
         "r2": "waiting",
         "r3": "done",
         "r4": "no offer",
-        "r5": "waiting",
+        "r5": "cancelled",
+        "r6": "builtin",
     }
 
 

@@ -33,12 +33,17 @@ def _agreement(decision: dict, *, jev: str, kev: str) -> str:
 
 
 def _outcome(decision: dict, *, result: dict) -> str:
-    """The result of one command: a correction, a confirmation, a wait, or no offer."""
+    """The result of one command: a correction, a refusal, a delegation, a wait, or no offer."""
     if result.get("repeat") or result.get("correction"):
         return "correction"
+    if result.get("status") == "cancelled":
+        return "cancelled"
+    if result.get("status") == "builtin":
+        return "builtin"
     if result.get("pending") and result.get("status") == "done":
         return "confirmed"
     if result.get("pending"):
+        # A risky action waits until the person confirms or refuses it.
         return "waiting"
     if decision.get("act") is not True:
         return "no offer"
