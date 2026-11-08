@@ -38,10 +38,23 @@ from .const import (
 MAX_TOOL_ITERATIONS = 10
 MODEL_TIMEOUT = 30.0
 
+# The tools that the gateway runs itself. They are not the Assist API: a chat
+# request gets these and never the tools that act on a device.
+MCP_SERVERS = ("web_search",)
+
+# The weather entity of the house describes the house. The model read it once
+# and answered a question about another city with it, which is a confident
+# wrong answer and the worst reply this system can give.
+WORLD_RULE = (
+    "The weather and the sensors of the house describe the house, and they are "
+    "not the weather of another place. For a question about another place, use "
+    "the web search tool. If you cannot search, say that you do not know."
+)
+
 CHAT_PROMPT = (
     "You are a voice assistant. Answer the request in the language "
     '"{language}". Use one or two sentences. '
-    "The current date and time is {now}."
+    "The current date and time is {now}. " + WORLD_RULE
 )
 
 
@@ -180,7 +193,7 @@ async def run_model(
     llm_api: str | list[str] | None = None
     if not is_chat:
         llm_api = entry.options.get(CONF_LLM_HASS_API, DEFAULT_LLM_HASS_API)
-    prompt = None
+    prompt = WORLD_RULE
     if is_chat:
         prompt = CHAT_PROMPT.format(
             language=(user_input.language or "en")[:2],
@@ -221,6 +234,10 @@ async def run_model(
                 }
                 if tools:
                     kwargs["tools"] = tools
+                if MCP_SERVERS:
+                    # The gateway runs these, so the chat route reaches the
+                    # world without the tools that act on a device.
+                    kwargs["mcp_servers"] = list(MCP_SERVERS)
                 stream = await client.chat.completions.create(**kwargs)
                 async for content in chat_log.async_add_delta_content_stream(
                     user_input.agent_id, _transform_stream(stream, usage_holder)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any, Literal
 from unittest.mock import patch
@@ -575,3 +576,41 @@ async def test_a_4xx_is_model_unavailable(
             ChatLog(hass, CONVERSATION_ID),
             "chat",
         )
+
+
+async def test_the_request_carries_the_web_search_tool(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """Both routes ask the gateway for the web search tool.
+
+    LiteLLM runs the tool itself, so the chat route reaches the world without
+    being given the Assist API tools, which would let a remark act on a device.
+    """
+    client = FakeClient()
+    client.answers = [_text_answer()]
+    await _setup(hass, entry, aioclient_mock, "chat")
+
+    with _patch_client(client):
+        await _ask(hass, "Vai chover em Fortaleza?")
+
+    assert client.calls[0]["mcp_servers"] == ["web_search"]
+
+
+async def test_the_prompt_says_the_house_is_not_the_world(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """The house weather is not the weather of another place.
+
+    The model read the house weather and answered a question about Fortaleza
+    with it, which is a confident wrong answer, the worst failure this system
+    can give.
+    """
+    client = FakeClient()
+    client.answers = [_text_answer()]
+    await _setup(hass, entry, aioclient_mock, "complex")
+
+    with _patch_client(client):
+        await _ask(hass, "Como esta o tempo em Fortaleza?")
+
+    sent = json.dumps(client.calls[0]["messages"], ensure_ascii=False)
+    assert "not the weather of another place" in sent
