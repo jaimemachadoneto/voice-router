@@ -15,7 +15,14 @@ CONF_ROUTER_TIMEOUT = "router_timeout"
 DEFAULT_CHAT_MODEL = "voice-chat"
 DEFAULT_COMPLEX_MODEL = "voice-complex"
 DEFAULT_LLM_HASS_API = ["assist"]
-DEFAULT_ROUTER_TIMEOUT = 1.0
+# One command may spend this long: the router waits up to 0.8 s on the model,
+# and the call crosses the gateway. One second left no room for either.
+DEFAULT_ROUTER_TIMEOUT = 5.0
+
+# The sync writes the word file on a volume and has nothing to do with the
+# speed of a reply, so it gets its own, generous limit. At one second the house
+# never reached the router and the local route had no words.
+SYNC_TIMEOUT = 30.0
 
 # The time between two polls of the items that wait for a person.
 NOTIFY_MINUTES = 30

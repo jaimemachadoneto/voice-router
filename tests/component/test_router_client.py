@@ -164,3 +164,40 @@ async def test_the_health_call_carries_no_token(hass, aioclient_mock):
 
     headers = aioclient_mock.mock_calls[0][3] or {}
     assert "Authorization" not in headers
+
+
+async def test_the_sync_waits_longer_than_a_command(hass):
+    """The sync writes a file on a volume, so it gets its own time limit.
+
+    A command must answer quickly and a short limit there is deliberate. The
+    sync has nothing to do with the speed of a reply, and one second was not
+    enough across the gateway, so the house never reached the router.
+    """
+    from custom_components.voice_router.const import SYNC_TIMEOUT
+
+    client = make_client(hass)
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def json(self):
+            return ROUTE_REPLY
+
+    def request(method, url, **kwargs):
+        seen[url.rsplit("/", 1)[-1]] = kwargs["timeout"].total
+        return FakeResponse()
+
+    client._session.request = request  # type: ignore[method-assign]
+
+    await client.sync(SYNC_PAYLOAD)
+    await client.route("turn on the light", "en", "kitchen", "conv-1", None)
+
+    assert seen["sync"] == SYNC_TIMEOUT
+    assert seen["sync"] > seen["route"], "a command keeps its short limit"

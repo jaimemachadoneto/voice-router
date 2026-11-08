@@ -9,6 +9,8 @@ from typing import Any
 
 import aiohttp
 
+from .const import SYNC_TIMEOUT
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -39,6 +41,7 @@ class RouterClient:
         path: str,
         payload: dict[str, Any] | None = None,
         with_token: bool = True,
+        timeout: float | None = None,
     ) -> AsyncIterator[aiohttp.ClientResponse]:
         """Call the router and give the response.
 
@@ -51,7 +54,7 @@ class RouterClient:
                 f"{self._url}{path}",
                 json=payload,
                 headers=self._headers() if with_token else None,
-                timeout=aiohttp.ClientTimeout(total=self._timeout),
+                timeout=aiohttp.ClientTimeout(total=timeout or self._timeout),
             ) as response:
                 yield response
         except TimeoutError as error:
@@ -68,8 +71,15 @@ class RouterClient:
         return {"Authorization": f"Bearer {self._token}"}
 
     async def sync(self, payload: dict[str, Any]) -> None:
-        """Send the house to the router."""
-        async with self._async_response("POST", "/sync", payload) as response:
+        """Send the house to the router.
+
+        The router writes the word file on a volume before it answers, so this
+        call gets a longer limit than a command. At the command limit the house
+        never arrived, and the local route was left with no words.
+        """
+        async with self._async_response(
+            "POST", "/sync", payload, timeout=SYNC_TIMEOUT
+        ) as response:
             if response.status != 200:
                 raise RouterUnavailable(
                     f"The router refused the sync with status {response.status}"
