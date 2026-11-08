@@ -67,25 +67,41 @@ def _named(text: str, words: Mapping[str, Sequence[str]]) -> set[str]:
     }
 
 
-def _named_areas(text: str, area_words: Mapping[str, Sequence[str]]) -> set[str]:
-    """The areas that the text names, and only the areas of the longest word.
+def _phrase_spans(text: str, phrase: str) -> list[tuple[int, int]]:
+    """The positions of the whole words of the phrase in the text."""
+    return [
+        (match.start(), match.end())
+        for match in re.finditer(rf"\b{re.escape(phrase)}\b", text)
+    ]
 
-    "quarto de hóspedes" holds the word "quarto", an alias of the bedroom, and
-    it is also the name of the guest room. The longer word is the one that the
-    person said, so only the guest room stays.
+
+def _named_areas(text: str, area_words: Mapping[str, Sequence[str]]) -> set[str]:
+    """The areas that the text names.
+
+    A room word sits inside the name of another room: "quarto de hóspedes"
+    holds "quarto", an alias of the bedroom. A match that a longer match covers
+    is therefore dropped, so the guest room stays and the bedroom does not. Two
+    rooms named at different places in the sentence are both kept, because
+    "a luz da sala e da garagem" is two rooms and not one.
     """
     norm = fold(text)
-    best, found = 0, set()
+    matches: list[tuple[int, int, int, str]] = []
     for area, options in area_words.items():
         for word in options:
             phrase = fold(word)
-            if not phrase or not has_phrase(norm, phrase):
+            if not phrase:
                 continue
-            if len(phrase) > best:
-                best, found = len(phrase), {area}
-            elif len(phrase) == best:
-                found.add(area)
-    return found
+            for start, end in _phrase_spans(norm, phrase):
+                matches.append((start, end, end - start, area))
+    kept: list[tuple[int, int, int, str]] = []
+    for start, end, length, area in sorted(matches, key=lambda item: -item[2]):
+        covered = any(
+            longer > length and begin <= start and end <= finish
+            for begin, finish, longer, _ in kept
+        )
+        if not covered:
+            kept.append((start, end, length, area))
+    return {area for _, _, _, area in kept}
 
 
 def word_filter(

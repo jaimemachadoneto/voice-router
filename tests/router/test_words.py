@@ -5,7 +5,7 @@ so they check the rules of the filter without a model.
 """
 
 from voice_router import words
-from voice_router.words import Entity
+from voice_router.words import Entity, word_filter
 
 
 def test_the_text_of_an_entity_has_the_name_and_the_area():
@@ -301,3 +301,50 @@ def test_a_weak_best_answer_acts_on_nothing():
 
 def test_no_option_acts_on_nothing():
     assert words.choose([], None) == []
+
+
+def test_two_rooms_named_in_one_command_both_stay():
+    """A command that names two rooms selects the devices of both.
+
+    The longest-word rule exists for "quarto de hospedes", which holds
+    "quarto". It must not drop a second room that the person named elsewhere
+    in the sentence: "a luz da sala e da garagem" is two rooms, not one.
+    """
+    entities = [
+        Entity("light.sala_teto", "Luz Sala Teto", "Sala"),
+        Entity("light.garagem", "Luz Garagem", "Garagem"),
+        Entity("light.cozinha", "Luz Cozinha", "Cozinha"),
+    ]
+    areas = {"Sala": ["sala"], "Garagem": ["garagem"], "Cozinha": ["cozinha"]}
+
+    got = word_filter(
+        "liga a luz da sala e da garagem",
+        entities,
+        {"light": ["luz"]},
+        areas,
+        None,
+        None,
+    )
+
+    assert got is not None
+    assert sorted(got) == ["light.garagem", "light.sala_teto"]
+
+
+def test_a_longer_room_name_still_wins_over_its_own_word():
+    """The overlapping case keeps only the longer name."""
+    entities = [
+        Entity("light.quarto", "Luz Quarto", "Quarto"),
+        Entity("light.hospede", "Luz Hospede", "Quarto de Hospedes"),
+    ]
+    areas = {"Quarto": ["quarto"], "Quarto de Hospedes": ["quarto de hospedes"]}
+
+    got = word_filter(
+        "liga a luz do quarto de hospedes",
+        entities,
+        {"light": ["luz"]},
+        areas,
+        None,
+        None,
+    )
+
+    assert got == ["light.hospede"]

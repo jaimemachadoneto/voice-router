@@ -1,9 +1,8 @@
 { pkgs, ... }:
 {
-  # The shared stacks, vendored by `base link --vendor`. Keep this import.
-  # They are real files in this repository, so CI builds the shell without a
-  # checkout of devbase, and `base sync` keeps them current in vendor mode.
-  imports = [ ./devenv/stacks.nix ];
+  # The shared stacks. `base link` writes this import; the stacks themselves
+  # come from the devbase-stacks flake input in devenv.yaml.
+  imports = [ ./devenv.stacks.nix ];
 
   name = "voice-router";
 
