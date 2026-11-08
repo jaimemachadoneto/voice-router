@@ -1,7 +1,5 @@
 devenv.lock
-devenv.nix
 devenv.local.nix
-devenv.base.nix
 .devenv/
 .direnv/
 __pycache__/

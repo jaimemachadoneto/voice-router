@@ -8,8 +8,6 @@
 # copied from devbase `.github/workflows/project-ci.yaml` and `image.yaml`, and
 # it reads devbase with a token, which is allowed.
 #
-# A linked project carries no devenv.base.nix in git, so this workflow checks
-# out devbase, puts the project under devbase/repos/ and runs `base link`.
 name: ci
 
 on:
@@ -23,36 +21,11 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      NAME: ${{ github.event.repository.name }}
-      STACKS: python
     steps:
-      # Fail closed. The job runs the code of the project, so it must never
-      # hold a token that can write anywhere. MY_PAT can push to home-ops and
-      # stays in release.yaml, where no project code runs.
-      - name: The read-only devbase token must be set
-        env:
-          HAS_TOKEN: ${{ secrets.DEVBASE_TOKEN != '' }}
-        run: |
-          set -eu
-          [ "$HAS_TOKEN" = true ] || {
-            echo "::error::set DEVBASE_TOKEN: a fine-grained token with Contents read on jaimemachadoneto/devbase"
-            exit 1
-          }
-
+      # The shared stack is vendored in devenv/, so this job builds the shell
+      # from the repository alone. It needs no token and no other repository,
+      # which also means no credential sits in a job that runs project code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: jaimemachadoneto/devbase
-          ref: main
-          token: ${{ secrets.DEVBASE_TOKEN }}
-          path: devbase
-          # Drop the credential from .git/config once the clone is done, so
-          # project code cannot read it.
-          persist-credentials: false
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: devbase/repos/${{ github.event.repository.name }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
@@ -60,22 +33,11 @@ jobs:
       - name: Install devenv
         run: nix profile install nixpkgs#devenv
 
-      - name: Wire the project to the shared stacks
-        working-directory: devbase
-        run: |
-          set -eu
-          if [ -d "repos/$NAME/devenv" ]; then
-            echo "vendored: the project carries its own devenv/ copies"
-          else
-            BASE_NO_SYNC=1 bin/base link "$NAME" --lang "$STACKS"
-          fi
-
+      # `devenv test` runs `check`, the same suite as on a laptop.
       - name: check
-        working-directory: devbase/repos/${{ github.event.repository.name }}
         run: devenv test
 
       - name: lint
-        working-directory: devbase/repos/${{ github.event.repository.name }}
         run: devenv shell -- lint
 
   image:
