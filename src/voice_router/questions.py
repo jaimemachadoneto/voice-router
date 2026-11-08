@@ -15,13 +15,16 @@ from voice_router.words import entity_text
 ROUTE = {
     "device_command": "an immediate action on one device of the house now, such as a light, a blind, a fan or the air conditioner, or a question about the state of one device",
     "chat": "a question, a remark or an explanation that needs no device and no tool, including a question about a device that asks for no action, such as its cost or how to change it",
-    "complex": "a condition, several steps, or a tool such as a calendar, a timer, a reminder or a message",
+    "complex": "a condition, several steps, a question about the state of several devices or of the whole house, or a tool such as a calendar, a timer, a reminder or a message",
 }
 ROUTE_Q = (
     "A person spoke to the voice assistant of a house. Which route fits the request? "
     "Choose device_command only when the person asks for an action on a device now, or "
     "asks for the state of one device. A question about a device that asks for no action, "
-    "such as its cost or how to change it, is chat and not device_command."
+    "such as its cost or how to change it, is chat and not device_command. "
+    "A question about the state of several devices, or of the whole house, such "
+    "as which lights are on, is complex: it needs a tool, and it is not the "
+    "state of one device."
 )
 ACTION = {
     "turn_on": "switch a device on, open it or start it",
