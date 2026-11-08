@@ -95,9 +95,10 @@ ENV_NAMES = (
 class FakeJev(Jev):
     """A Jev that answers a device command and the action to turn off."""
 
-    def __init__(self, device: str = "none"):
+    def __init__(self, device: str = "none", route: str = "device_command"):
         # The real client is not used, so the fake sets no key and no URL.
         self.device = device
+        self.route = route
         self.asked: list[str] = []
         self.calls = 0
 
@@ -107,9 +108,7 @@ class FakeJev(Jev):
         self.calls += 1
         self.asked = [q.name for q in questions]
         answers = {
-            "route": Answer(
-                "device_command", {"device_command": 1.0}, 1.0, 0.01, 10, 0.0
-            ),
+            "route": Answer(self.route, {self.route: 1.0}, 1.0, 0.01, 10, 0.0),
             "action": Answer("turn_off", {"turn_off": 1.0}, 1.0, 0.01, 10, 0.0),
         }
         if "device" in self.asked:
@@ -179,11 +178,14 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
 
 def make_client(
-    settings: Settings, store: Store | None = None, local: Jev | None = None
+    settings: Settings,
+    store: Store | None = None,
+    local: Jev | None = None,
+    jev: Jev | None = None,
 ) -> TestClient:
     """A client for a new app, on the store of the test."""
     return TestClient(
-        create_app(settings, FakeJev(), store or Store(settings.db), local)
+        create_app(settings, jev or FakeJev(), store or Store(settings.db), local)
     )
 
 
@@ -405,6 +407,44 @@ def test_route_logs_the_local_answer(settings: Settings):
     assert body["local"]["choice"] == "light.office_lamp"
     record = store.record(body["record_id"])
     assert record is not None
+    assert record["decision"]["local"]["choice"] == "light.office_lamp"
+
+
+def test_kev_checks_a_command_with_one_option(settings: Settings):
+    """Kev checks every device request, not only the wide ones.
+
+    The comparison answers "is Jev right", and the router asked Kev only at
+    two or more options. A house of one fan in a room therefore gave the
+    comparison nothing at all.
+    """
+    store = Store(settings.db)
+    client = make_client(settings, store, FakeLocal(answer=LOCAL_ANSWER))
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    body = client.post("/route", json=ROUTE_BODY, headers=HEADERS).json()
+
+    record = store.record(body["record_id"])
+    assert record is not None
+    assert record["decision"]["local"]["choice"] == "light.office_lamp"
+
+
+def test_kev_checks_a_request_that_jev_sends_to_another_route(settings: Settings):
+    """A request that Jev sends away from the device route gets the check too.
+
+    The check is how the log shows that Jev sent a device command to the
+    complex route, which was the case for two rooms in one sentence.
+    """
+    store = Store(settings.db)
+    client = make_client(
+        settings, store, FakeLocal(answer=LOCAL_ANSWER), FakeJev(route="chat")
+    )
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+
+    body = client.post("/route", json=LIGHTS_BODY, headers=HEADERS).json()
+
+    record = store.record(body["record_id"])
+    assert record is not None
+    assert record["decision"]["route"] == "chat"
     assert record["decision"]["local"]["choice"] == "light.office_lamp"
 
 

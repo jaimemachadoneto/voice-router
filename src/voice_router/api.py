@@ -94,12 +94,6 @@ class ProposalBody(BaseModel):
     by: str = Field(min_length=1, max_length=80)
 
 
-def _consume(task: asyncio.Task) -> None:
-    """Read the result of a task that no one awaits, so the loop stays quiet."""
-    if not task.cancelled():
-        task.exception()
-
-
 def _store_late_answer(store: Store, record_id: str, task: asyncio.Task) -> None:
     """Keep a Kev answer that arrives after the reply, and change no reply."""
     if task.cancelled():
@@ -124,9 +118,10 @@ async def _shadow(
     if task is None:
         return None
     if route != DEVICE_COMMAND:
-        # The reply never holds a Kev answer for another route, so consume the
-        # task result here and keep the event loop quiet.
-        task.add_done_callback(_consume)
+        # The reply never holds a Kev answer for another route, but the log
+        # keeps it. A device command that Jev sent to the complex route then
+        # shows what the words found, which is how the log exposes it.
+        task.add_done_callback(lambda done: _store_late_answer(store, record_id, done))
         return None
     try:
         answer = await asyncio.wait_for(asyncio.shield(task), timeout=SHADOW_GRACE)
@@ -280,14 +275,12 @@ def create_app(
             raise HTTPException(status_code=503, detail="no sync")
         shadow = house.filter_shadow(body.text, body.room)
         local_task = None
-        if (
-            local is not None
-            and shadow.options is not None
-            and len(shadow.options) >= 2
-        ):
+        if local is not None and shadow.options:
             # Kev reads the shadow options, which hold the confirmed words.
             # The shadow waits a short grace only, so a slow or down Kev
-            # server changes no reply.
+            # server changes no reply. The check runs for every set, not only
+            # a wide one: it answers "is Jev right", and one option is still
+            # a decision to check.
             local_task = asyncio.create_task(
                 ask_local(
                     local,
