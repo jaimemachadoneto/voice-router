@@ -70,7 +70,28 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
     """
     request = record.get("request") or {}
     decision = record.get("decision") or {}
+    result = record.get("result") or {}
+    route = decision.get("route") or ""
     local = decision.get("local") or {}
+    if route != "device_command":
+        # A chat or complex turn has no device to compare, so it carries the
+        # model and the tools instead. The dashboard is the screen a person
+        # monitors, and the conversational half of the assistant is part of
+        # what happens in the house.
+        return {
+            "id": record.get("id"),
+            "text": request.get("text") or "",
+            "room": request.get("room"),
+            "language": request.get("language") or "en",
+            "route": route,
+            "jev": None,
+            "kev": None,
+            "agreement": None,
+            "outcome": None,
+            "seconds": float(result.get("seconds") or 0.0),
+            "model": result.get("model"),
+            "tools": list(result.get("tools") or []),
+        }
     jev = _jev_choice(decision)
     kev = local.get("choice") or NONE
     return {
@@ -78,6 +99,9 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
         "text": request.get("text") or "",
         "room": request.get("room"),
         "language": request.get("language") or "en",
+        "route": route,
+        "model": None,
+        "tools": [],
         "jev": names.get(jev, jev),
         "kev": names.get(kev, kev),
         # A command with no local answer cannot agree or disagree with it. The
@@ -120,7 +144,9 @@ def summary(records: list[dict], names: Mapping[str, str] | None = None) -> dict
         for record in records
         if (record.get("decision") or {}).get("route") == "device_command"
     ]
-    recent = [_recent_row(record, names) for record in reversed(device)][:RECENT_LIMIT]
+    # Every request, device command or conversation: the dashboard monitors the
+    # whole assistant, and a chat turn that a person made is not invisible.
+    recent = [_recent_row(record, names) for record in reversed(records)][:RECENT_LIMIT]
     return {
         "commands": commands,
         "total": len(device),

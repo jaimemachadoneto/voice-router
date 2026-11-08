@@ -130,10 +130,17 @@ def test_a_record_without_a_local_answer_is_ignored():
     # The comparison ignores them: a criterion needs two answers.
     assert result["commands"] == 0
     assert result["agreement"] == 0.0
-    # The table still shows the device commands, because the person asked them.
-    # A chat request is not a device command and stays out.
-    assert [row["id"] for row in result["recent"]] == ["r2", "r1"]
-    assert {row["agreement"] for row in result["recent"]} == {"uncompared"}
+    # The table shows every request the person made, conversation included.
+    assert [row["id"] for row in result["recent"]] == ["r3", "r2", "r1"]
+    device_agreements = {
+        row["agreement"] for row in result["recent"] if row["route"] == "device_command"
+    }
+    assert device_agreements == {"uncompared"}
+    assert all(
+        row["agreement"] is None
+        for row in result["recent"]
+        if row["route"] != "device_command"
+    ), "a conversation has no device answers to compare"
     assert result["total"] == 2
 
 
@@ -192,6 +199,9 @@ def test_a_recent_row_holds_the_request_the_choices_and_the_agreement():
         "text": "turn on the desk lamp",
         "room": "Office",
         "language": "en",
+        "route": "device_command",
+        "model": None,
+        "tools": [],
         "jev": "light.office_lamp",
         "kev": "light.office_lamp",
         "agreement": "agree",
@@ -296,3 +306,35 @@ def test_the_latency_of_a_command_without_a_local_answer_comes_from_jev():
     row = summary([record])["recent"][0]
 
     assert row["seconds"] == 0.21
+
+
+def test_a_chat_turn_appears_in_the_recent_list():
+    """The dashboard monitors the whole assistant, not only the devices.
+
+    A chat or complex turn is a real request that a person made. It has no
+    device answers to compare, so it carries the model and the tools instead,
+    and the Jev and Kev columns stay empty.
+    """
+    records = [
+        _record("r1", route="chat", act=False),
+        _record("r2"),
+    ]
+    records[0]["result"] = {
+        "model": "voice-chat",
+        "tools": [],
+        "input_tokens": 5123,
+        "output_tokens": 159,
+        "seconds": 3.75,
+    }
+
+    result = summary(records)
+
+    rows = {row["id"]: row for row in result["recent"]}
+    assert set(rows) == {"r1", "r2"}, "both the chat turn and the command"
+    assert rows["r1"]["route"] == "chat"
+    assert rows["r1"]["model"] == "voice-chat"
+    assert rows["r1"]["jev"] is None
+    assert rows["r1"]["kev"] is None
+    assert rows["r1"]["seconds"] == 3.75
+    assert rows["r2"]["route"] == "device_command"
+    assert result["total"] == 1, "the device count stays the device count"
