@@ -49,6 +49,7 @@ from custom_components.voice_router.conversation import VoiceRouterAgent
 from custom_components.voice_router.llm_loop import (
     MAX_TOOL_ITERATIONS,
     MODEL_TIMEOUT,
+    WEB_SEARCH_TOOL_NAME,
     ModelUnavailable,
     run_model,
 )
@@ -315,18 +316,23 @@ async def _ask(hass: HomeAssistant, text: str) -> conversation.ConversationResul
     return result
 
 
-async def test_chat_sends_no_tools(
+async def test_chat_sends_only_the_web_search_tool(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:
-    """A chat request sends no tools."""
+    """A chat request sends the web search tool and no Assist API tool.
+
+    The chat route must reach the world, because "will it rain today" is a chat
+    question. It must not reach a device: the Assist API tools act on the house.
+    """
     client = FakeClient()
     client.answers = [_text_answer()]
     await _setup(hass, entry, aioclient_mock, "chat")
 
     with _patch_client(client):
-        await _ask(hass, "Que horas são?")
+        await _ask(hass, "Vai chover em Fortaleza?")
 
-    assert "tools" not in client.calls[0]
+    names = [tool["function"]["name"] for tool in client.calls[0]["tools"]]
+    assert names == [WEB_SEARCH_TOOL_NAME]
     assert client.calls[0]["model"] == CHAT_MODEL
     assert client.init_kwargs == {
         "base_url": "http://llm",
@@ -337,13 +343,13 @@ async def test_chat_sends_no_tools(
     assert client.closed is True
 
 
-async def test_complex_sends_the_tools_of_the_assist_api(
+async def test_complex_sends_the_web_search_tool_and_the_tools_of_the_assist_api(
     hass: HomeAssistant,
     entry: MockConfigEntry,
     aioclient_mock,
     kitchen_light: str,
 ) -> None:
-    """A complex request sends the tools of the Assist API."""
+    """A complex request sends both the web search tool and the Assist API tools."""
     client = FakeClient()
     client.answers = [_text_answer()]
     await _setup(hass, entry, aioclient_mock, "complex")
@@ -352,6 +358,7 @@ async def test_complex_sends_the_tools_of_the_assist_api(
         await _ask(hass, "Acende a luz da cozinha")
 
     names = [tool["function"]["name"] for tool in client.calls[0]["tools"]]
+    assert WEB_SEARCH_TOOL_NAME in names
     assert any(name.endswith("HassTurnOn") for name in names)
     assert client.calls[0]["model"] == COMPLEX_MODEL
 
@@ -581,10 +588,11 @@ async def test_a_4xx_is_model_unavailable(
 async def test_the_request_carries_the_web_search_tool(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:
-    """Both routes ask the gateway for the web search tool.
+    """The web search tool travels in `tools`, under the name the gateway knows.
 
-    LiteLLM runs the tool itself, so the chat route reaches the world without
-    being given the Assist API tools, which would let a remark act on a device.
+    The gateway replaces a tool named `litellm_web_search` with its own search.
+    With any other name it answers with a tool call and no text, so the person
+    hears nothing. The old `mcp_servers` body key did nothing at all.
     """
     client = FakeClient()
     client.answers = [_text_answer()]
@@ -593,10 +601,40 @@ async def test_the_request_carries_the_web_search_tool(
     with _patch_client(client):
         await _ask(hass, "Vai chover em Fortaleza?")
 
-    # The OpenAI client rejects an unknown keyword, so the parameter travels in
-    # extra_body, which the client forwards as JSON without checking it.
-    assert client.calls[0]["extra_body"] == {"mcp_servers": ["web_search"]}
-    assert "mcp_servers" not in client.calls[0]
+    assert WEB_SEARCH_TOOL_NAME == "litellm_web_search"
+    tool = client.calls[0]["tools"][0]
+    assert tool["type"] == "function"
+    assert tool["function"]["name"] == WEB_SEARCH_TOOL_NAME
+    assert tool["function"]["parameters"]["required"] == ["query"]
+    assert "extra_body" not in client.calls[0]
+
+
+async def test_a_web_search_call_that_the_gateway_does_not_run_degrades(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    aioclient_mock,
+    kitchen_light: str,
+) -> None:
+    """A search tool call that comes back unanswered degrades, it does not crash.
+
+    The gateway returns the tool call instead of the answer when it cannot run
+    the search, for example when the provider is not enabled. Home Assistant
+    cannot execute that tool, so the turn must fall back rather than stop with
+    an unexpected error.
+    """
+    client = FakeClient()
+    client.answers = [
+        _tool_answer(
+            name=WEB_SEARCH_TOOL_NAME,
+            arguments='{"query": "temperatura em Fortaleza"}',
+        )
+    ]
+    await _setup(hass, entry, aioclient_mock, "complex")
+
+    with _patch_client(client):
+        result = await _ask(hass, "Qual a temperatura em Fortaleza?")
+
+    assert _speech(result) == NO_INTERNET_PT
 
 
 async def test_the_prompt_says_the_house_is_not_the_world(

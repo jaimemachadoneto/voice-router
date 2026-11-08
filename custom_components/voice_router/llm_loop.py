@@ -38,9 +38,35 @@ from .const import (
 MAX_TOOL_ITERATIONS = 10
 MODEL_TIMEOUT = 30.0
 
-# The tools that the gateway runs itself. They are not the Assist API: a chat
-# request gets these and never the tools that act on a device.
-MCP_SERVERS = ("web_search",)
+# The gateway replaces a tool with this exact name by its own web search, and
+# then answers with the words of the search result. Any other name comes back as
+# a tool call with no text, which this component cannot execute. The tool is
+# read-only, so the chat route keeps it without gaining a way to act on a house.
+WEB_SEARCH_TOOL_NAME = "litellm_web_search"
+
+WEB_SEARCH_TOOL = cast(
+    ChatCompletionFunctionToolParam,
+    {
+        "type": "function",
+        "function": {
+            "name": WEB_SEARCH_TOOL_NAME,
+            "description": (
+                "Search the web for current information, such as the weather or "
+                "the news of another place."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The words to search for.",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    },
+)
 
 # The weather entity of the house describes the house. The model read it once
 # and answered a question about another city with it, which is a confident
@@ -180,9 +206,15 @@ async def _transform_stream(
                     call["arguments"] += fragment.function.arguments
         if choice.finish_reason is not None:
             if tool_calls:
-                yield {
-                    "tool_calls": [_tool_input(call) for call in tool_calls.values()]
-                }
+                inputs = [_tool_input(call) for call in tool_calls.values()]
+                # The gateway runs the web search itself. A call for it means
+                # the gateway did not replace the tool, and Home Assistant has
+                # no such tool to run. Stop here, so the caller falls back,
+                # instead of sending a "tool not found" result back to the
+                # model and spending a second round trip on it.
+                if any(item.tool_name == WEB_SEARCH_TOOL_NAME for item in inputs):
+                    raise ModelUnavailable("The gateway did not run the web search")
+                yield {"tool_calls": inputs}
                 tool_calls = {}
             new_message = True
 
@@ -219,12 +251,13 @@ async def run_model(
     )
 
     messages = [_to_openai(content) for content in chat_log.content]
-    tools: list[ChatCompletionFunctionToolParam] | None = None
+    # The web search is the one tool of the chat route. It reads, it does not act.
+    tools: list[ChatCompletionFunctionToolParam] = [WEB_SEARCH_TOOL]
     if chat_log.llm_api is not None:
-        tools = [
+        tools.extend(
             _format_tool(tool, chat_log.llm_api.custom_serializer)
             for tool in chat_log.llm_api.tools
-        ]
+        )
 
     # A key pasted into the interface can carry a trailing space or newline,
     # and the gateway then answers 401 token_not_found_in_db, which reads like a
@@ -243,18 +276,10 @@ async def run_model(
                 kwargs: dict[str, Any] = {
                     "model": model,
                     "messages": list(messages),
+                    "tools": tools,
                     "stream": True,
                     "stream_options": {"include_usage": True},
                 }
-                if tools:
-                    kwargs["tools"] = tools
-                if MCP_SERVERS:
-                    # The OpenAI client refuses a keyword it does not know, so
-                    # the parameter travels in extra_body, which it forwards as
-                    # JSON without checking. The gateway runs these tools, so
-                    # the chat route reaches the world without the tools that
-                    # act on a device.
-                    kwargs["extra_body"] = {"mcp_servers": list(MCP_SERVERS)}
                 stream = await client.chat.completions.create(**kwargs)
                 async for content in chat_log.async_add_delta_content_stream(
                     user_input.agent_id, _transform_stream(stream, usage_holder)
