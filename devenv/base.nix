@@ -93,6 +93,16 @@ in
       description = "Commands (usually verbs such as `lint`) that `git commit` runs first. A failure stops the commit. Empty means no hook.";
     };
 
+    # The steps that make the test suite runnable: install the dependencies of
+    # the project. `devenv test` runs them before `check`, so CI needs no
+    # separate install step.
+    testSetup = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "uv sync --extra dev" ];
+      description = "Commands that `devenv test` runs before `check`, to install the dependencies of the project. Empty means the suite needs no setup.";
+    };
+
     # Python is a tool here, not a stack: agents and one-off scripts reach for
     # it to do work in projects written in something else entirely. Turn it off
     # in a project that must prove it needs nothing but its own toolchain.
@@ -115,7 +125,7 @@ in
       lib.optional (cfg.scriptingPython && !config.languages.python.enable) pkgs.python3
       ++ lib.optional cfg.release.enable pkgs.gh;
 
-    # The release script sits beside this module, so a vendored copy of the
+    # The release script sits beside this module, so a published copy of the
     # module carries it too.
     base.commands.deploy = lib.mkIf cfg.release.enable [
       ''BASE_RELEASE_BRANCH=${lib.escapeShellArg cfg.release.branch} ${pkgs.bash}/bin/bash ${./release.sh} "$@"''
@@ -125,8 +135,10 @@ in
     # gets both languages' work from one `check`.
     scripts = lib.mapAttrs mkTask cfg.commands;
 
-    # `devenv test` runs the same suite CI does.
+    # `devenv test` is what CI runs: the same setup and the same suite.
     enterTest = lib.mkIf (cfg.commands.check != [ ]) ''
+      set -eu
+      ${lib.concatMapStringsSep "\n" (c: c) cfg.testSetup}
       check
     '';
 
@@ -134,81 +146,9 @@ in
       BASE_STACKS = lib.concatStringsSep "," cfg.stacks;
       BASE_TDD_GUARD = cfg.tddGuard;
       BASE_PRE_COMMIT = lib.concatStringsSep "\n" cfg.preCommit;
-    }
-    # OpenCode reads the workspace config through the environment: the
-    # instructions (AGENTS.md) and the generated subagents in opencode/agents.
-    # A vendored copy of this module has no opencode/ beside it and skips this.
-    // lib.optionalAttrs (builtins.pathExists ../opencode/opencode.json) {
-      BASE_ROOT = toString ./..;
-      OPENCODE_CONFIG = "${toString ./..}/opencode/opencode.json";
-      OPENCODE_CONFIG_DIR = "${toString ./..}/opencode";
     };
 
     enterShell = ''
-      # The memini namespace of this project, for agents that cannot ask
-      # memini themselves (OpenCode reads it in opencode.json). It is the repo
-      # name from the git remote, the same rule that memini uses.
-      MEMINI_NAMESPACE=$(basename "$(git remote get-url origin 2>/dev/null)" .git 2>/dev/null)
-      export MEMINI_NAMESPACE="''${MEMINI_NAMESPACE:-$(basename "$PWD")}"
-
-      # `base` on PATH in every project shell, so `base doctor` or a re-link
-      # works without returning to the workspace root. toString keeps this a
-      # real filesystem path rather than copying the tree into the nix store.
-      case ":$PATH:" in
-        *":${toString ./..}/bin:"*) ;;
-        *) export PATH="${toString ./..}/bin:$PATH" ;;
-      esac
-
-      # The shell function passes the generated presets to dsh, so ~/.dsh stays
-      # untouched. It passes the patch only for the tui and web profiles.
-      if [ -n "''${BASE_ROOT:-}" ] && [ -f "$BASE_ROOT/dsh/agents.patch.yml" ]; then
-        dsh() {
-          local profile="tui" rest=()
-          case "''${1:-}" in
-            "") ;;
-            --profile)
-              profile="''${2:-tui}"
-              rest=("''${@:3}")
-              ;;
-            *)
-              profile="$1"
-              rest=("''${@:2}")
-              ;;
-          esac
-          case "$profile" in
-            tui | web)
-              # The dsh MCP rows read these variables, so a token never goes
-              # into the generated patch file.
-              MEMINI_API_KEY="$(cat "$HOME/.config/memini/api-key" 2>/dev/null)" \
-                LITELLM_API_KEY="$(cat "$HOME/.config/litellm/api-key" 2>/dev/null)" \
-                command dsh "$profile" --patch "$BASE_ROOT/dsh/agents.patch.yml" "''${rest[@]}"
-              ;;
-            *) command dsh "$@" ;;
-          esac
-        }
-      fi
-
-      # Keep the shared Claude config current on entry. This relinks only
-      # .claude/, never a devenv file: nothing under .claude is a devenv input
-      # or a direnv watch, so it cannot retrigger the shell it runs in. Stack
-      # wiring still needs an explicit `base sync`, since devenv.local.nix is
-      # a watched input. Set BASE_NO_SYNC=1 to skip.
-      if [ -z "''${BASE_NO_SYNC:-}" ] && [ -x "${toString ./..}/bin/base" ]; then
-        # devenv does not forward a child process's stdout from enterShell, so
-        # capture the report and print it with the shell's own printf.
-        base_msg="$("${toString ./..}/bin/base" sync-claude "$DEVENV_ROOT" 2>/dev/null || true)"
-        [ -n "$base_msg" ] && printf '%s\n' "$base_msg"
-        unset base_msg
-      fi
-
-      # The git pre-commit hook for base.preCommit. Written only into a hook
-      # file that base owns, never over a hook the project has.
-      if [ -z "''${BASE_NO_SYNC:-}" ] && [ -x "${toString ./..}/bin/base" ]; then
-        base_msg="$("${toString ./..}/bin/base" git-hook "$DEVENV_ROOT" 2>&1 || true)"
-        [ -n "$base_msg" ] && printf '%s\n' "$base_msg"
-        unset base_msg
-      fi
-
       if [ -n "''${BASE_STACKS:-}" ]; then
         printf '\033[2m%s\033[0m \033[2m·\033[0m \033[2m%s\033[0m\n' \
           "''${DEVENV_ROOT##*/}" "$BASE_STACKS"

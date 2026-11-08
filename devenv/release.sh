@@ -46,6 +46,22 @@ esac
 next="v$major.$minor.$patch"
 
 git rev-parse -q --verify "refs/tags/$next" >/dev/null && die "tag $next already exists"
+
+# A project that keeps a version in its own files gives a hook to write it, so
+# the tag, the files and what the world reads cannot drift apart. The hook runs
+# before the tag, and its change goes in its own commit, because the tree has to
+# be clean again before the tag is made.
+version="${next#v}"
+if [ -x "scripts/set-version.sh" ]; then
+  ./scripts/set-version.sh "$version"
+  if [ -n "$(git status --porcelain)" ]; then
+    git add -A
+    git commit --quiet -m "release $next"
+    git push --quiet origin "$BRANCH"
+    printf '\033[32m✓\033[0m wrote version %s and committed it\n' "$version"
+  fi
+fi
+
 git tag -a "$next" -m "release $next"
 git push --quiet origin "$next"
 printf '\033[32m✓\033[0m tagged %s (was %s) and pushed it — CI releases it\n' "$next" "$last"

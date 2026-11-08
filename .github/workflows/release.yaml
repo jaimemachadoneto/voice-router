@@ -153,3 +153,27 @@ jobs:
             - Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             Flux applies it after the merge.
+  # HACS reads GitHub Releases, not tags. Without this job a tag exists, the
+  # image ships, and HACS still offers the last release it saw.
+  release:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.image.outputs.version }}
+        run: |
+          set -eu
+          gh release view "v$VERSION" >/dev/null 2>&1 && {
+            echo "the release v$VERSION already exists"
+            exit 0
+          }
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --generate-notes \
+            --verify-tag

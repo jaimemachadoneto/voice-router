@@ -1,4 +1,4 @@
-# managed by baseProject — regenerate with `base link voice-router`
+# managed by baseProject — regenerate with `base link --vendor`
 { ... }:
 {
   imports = [
