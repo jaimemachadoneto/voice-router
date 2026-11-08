@@ -643,3 +643,52 @@ async def test_a_client_error_degrades_instead_of_ending_the_turn(
             ChatLog(hass, CONVERSATION_ID),
             "chat",
         )
+
+
+async def test_a_key_with_a_trailing_space_is_trimmed(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A copy-paste that carries whitespace must not break the model.
+
+    The gateway answers 401 token_not_found_in_db for a key with a trailing
+    newline, which reads exactly like a wrong key.
+    """
+    untrimmed = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_ROUTER_URL: ROUTER,
+            CONF_ROUTER_TOKEN: "t",
+            CONF_LITELLM_URL: "http://llm ",
+            CONF_LITELLM_KEY: "k\n",
+        },
+        options=dict(entry.options),
+    )
+    entry = untrimmed
+    client = FakeClient()
+    client.answers = [_text_answer()]
+    await _setup(hass, entry, aioclient_mock, "chat")
+
+    with _patch_client(client):
+        await _ask(hass, "Ola")
+
+    assert client.init_kwargs["api_key"] == "k"
+    assert client.init_kwargs["base_url"] == "http://llm"
+
+
+async def test_the_prompt_tells_the_model_to_name_the_kind_of_device(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A tool call must carry the domain, not only the area.
+
+    "Turn on the lights of the garage" switched on the car charger too, because
+    the call named the area and no domain, and an area holds every device.
+    """
+    client = FakeClient()
+    client.answers = [_text_answer()]
+    await _setup(hass, entry, aioclient_mock, "complex")
+
+    with _patch_client(client):
+        await _ask(hass, "liga as luzes da garagem")
+
+    sent = json.dumps(client.calls[0]["messages"], ensure_ascii=False)
+    assert "give the domain of that device to the tool" in sent

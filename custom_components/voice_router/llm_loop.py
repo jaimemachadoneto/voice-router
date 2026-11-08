@@ -45,6 +45,17 @@ MCP_SERVERS = ("web_search",)
 # The weather entity of the house describes the house. The model read it once
 # and answered a question about another city with it, which is a confident
 # wrong answer and the worst reply this system can give.
+# The tools of Home Assistant act on an area, and an area holds every kind of
+# device. "Turn on the lights of the garage" once switched on the car charger
+# too, because the request named no domain. A tool call that names the kind of
+# device switches only those devices.
+DEVICE_RULE = (
+    "When the person names a kind of device, such as the lights or the blinds, "
+    "give the domain of that device to the tool. Do not act on a whole area or "
+    "floor when the request names one kind of device: the area also holds other "
+    "devices, such as a charger or a heater, and they must not switch."
+)
+
 WORLD_RULE = (
     "The weather and the sensors of the house describe the house, and they are "
     "not the weather of another place. For a question about another place, use "
@@ -193,7 +204,7 @@ async def run_model(
     llm_api: str | list[str] | None = None
     if not is_chat:
         llm_api = entry.options.get(CONF_LLM_HASS_API, DEFAULT_LLM_HASS_API)
-    prompt = WORLD_RULE
+    prompt = WORLD_RULE + " " + DEVICE_RULE
     if is_chat:
         prompt = CHAT_PROMPT.format(
             language=(user_input.language or "en")[:2],
@@ -215,9 +226,12 @@ async def run_model(
             for tool in chat_log.llm_api.tools
         ]
 
+    # A key pasted into the interface can carry a trailing space or newline,
+    # and the gateway then answers 401 token_not_found_in_db, which reads like a
+    # wrong key. Strip both, so a copy-paste cannot break the model.
     client = AsyncOpenAI(
-        base_url=entry.data[CONF_LITELLM_URL],
-        api_key=entry.data[CONF_LITELLM_KEY],
+        base_url=entry.data[CONF_LITELLM_URL].strip(),
+        api_key=entry.data[CONF_LITELLM_KEY].strip(),
         timeout=MODEL_TIMEOUT,
         max_retries=0,
     )
