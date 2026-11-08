@@ -287,8 +287,14 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
             # agent, because the model would act without the confirmation.
             risky = self._entry.options.get(CONF_RISKY, DEFAULT_RISKY)
             candidates = decision.get("options") or []
-            if self._model_configured() and not any(
-                is_risky(self.hass, entity_id, risky) for entity_id in candidates
+            # The gate is the exposed set, not the router's shortlist: the
+            # model acts on whatever Assist exposes, so one exposed risky
+            # entity keeps every weak command with the built-in agent. An empty
+            # shortlist is no evidence either, so it fails closed as well.
+            if (
+                self._model_configured()
+                and candidates
+                and not exposed_risky(self.hass, risky)
             ):
                 try:
                     reply, result = await run_model(

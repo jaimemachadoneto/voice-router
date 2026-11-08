@@ -307,15 +307,22 @@ async def test_a_device_command_that_did_not_act_goes_to_the_model(
     assert _speech(result) == reply[0]
 
 
-async def test_a_weak_device_command_with_a_risky_candidate_stays_builtin(
+async def test_a_weak_command_stays_builtin_when_a_risky_entity_is_exposed(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock, car_charger: str
 ) -> None:
-    """The model must not act on a risky device without the confirmation."""
+    """The gate is the exposed set, not the shortlist.
+
+    The model acts on whatever Assist exposes, so one exposed risky entity
+    keeps every weak command with the built-in agent. A risky device outside
+    the shortlist would otherwise slip past the gate.
+    """
+    async_expose_entity(hass, conversation.DOMAIN, car_charger, True)
+    hass.states.async_set("light.kitchen", "on")
     await _setup(
         hass,
         entry,
         aioclient_mock,
-        _decision(act=False, reason="low_confidence", options=[car_charger]),
+        _decision(act=False, reason="low_confidence", options=["light.kitchen"]),
     )
     builtin = _result("from the built-in agent")
 
@@ -323,7 +330,31 @@ async def test_a_weak_device_command_with_a_risky_candidate_stays_builtin(
         patch(CONVERSATION_MODULE + ".run_model", AsyncMock()) as model,
         patch(BUILTIN_MODULE, AsyncMock(return_value=builtin)) as fallback,
     ):
-        result = await _ask(hass, "desliga aquilo")
+        result = await _ask(hass, "apaga a luz ali")
+
+    model.assert_not_awaited()
+    fallback.assert_awaited_once()
+    assert result is builtin
+
+
+async def test_a_weak_command_with_no_candidate_stays_builtin(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """An empty shortlist is no evidence, so it fails closed."""
+    hass.states.async_set("light.kitchen", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(act=False, reason="no_set", options=[]),
+    )
+    builtin = _result("from the built-in agent")
+
+    with (
+        patch(CONVERSATION_MODULE + ".run_model", AsyncMock()) as model,
+        patch(BUILTIN_MODULE, AsyncMock(return_value=builtin)) as fallback,
+    ):
+        result = await _ask(hass, "faz aquilo")
 
     model.assert_not_awaited()
     fallback.assert_awaited_once()
