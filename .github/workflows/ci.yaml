@@ -33,6 +33,13 @@ jobs:
       - name: Install devenv
         run: nix profile install nixpkgs#devenv
 
+      # The check and lint verbs run through the project's own venv, and a
+      # fresh runner has it empty. Without this step `check` takes its "pytest
+      # is not installed" branch and passes without running a test, and
+      # `lint` reports every import as unresolved.
+      - name: Install the project and its test dependencies
+        run: devenv shell -- uv sync --extra dev
+
       # `devenv test` runs `check`, the same suite as on a laptop.
       - name: check
         run: devenv test
