@@ -542,3 +542,36 @@ async def test_the_chat_prompt_has_the_date_and_the_language(
     assert system["role"] == "system"
     assert today in system["content"]
     assert 'in the language "pt"' in system["content"]
+
+
+async def test_a_4xx_is_model_unavailable(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A 4xx answer raises ModelUnavailable, not an unhandled error.
+
+    A model name that the gateway does not know, or a key that it refuses, is a
+    configuration problem. It must degrade to the built-in agent, not stop the
+    conversation with an unexpected error.
+    """
+    request = httpx2.Request("POST", "http://llm")
+    response = httpx2.Response(400, request=request)
+    client = FakeClient()
+    client.answers = [
+        openai.BadRequestError(
+            "Invalid model name passed in model=voice-complex",
+            response=response,
+            body=None,
+        )
+    ]
+
+    with (
+        _patch_client(client),
+        pytest.raises(ModelUnavailable),
+    ):
+        await run_model(
+            hass,
+            entry,
+            _user_input(),
+            ChatLog(hass, CONVERSATION_ID),
+            "chat",
+        )

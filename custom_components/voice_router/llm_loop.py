@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any, cast
@@ -12,6 +13,8 @@ from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
+
+_LOGGER = logging.getLogger(__name__)
 from homeassistant.util import dt as dt_util
 from openai import AsyncOpenAI
 from openai.types.chat import (
@@ -226,9 +229,17 @@ async def run_model(
             except openai.APIConnectionError, openai.APITimeoutError:
                 raise ModelUnavailable("The model is not reachable") from None
             except openai.APIStatusError as err:
-                if err.status_code >= 500:
-                    raise ModelUnavailable("The model is not available") from None
-                raise
+                # A 5xx is a problem of the service. A 4xx is a problem of the
+                # configuration: a model name that the gateway does not know, or
+                # a key that it refuses. Neither gives an answer, so the caller
+                # falls back to the built-in agent. Raising the 4xx made Home
+                # Assistant report an unexpected error and stop the turn.
+                _LOGGER.warning(
+                    "The model answered %s: %s", err.status_code, err.message
+                )
+                raise ModelUnavailable(
+                    f"The model refused the request with {err.status_code}"
+                ) from None
             if not chat_log.unresponded_tool_results:
                 break
     finally:
