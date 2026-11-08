@@ -25,7 +25,13 @@ from homeassistant.helpers import intent
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util.dt import utcnow
 
-from .const import CONF_RISKY, DEFAULT_RISKY, DOMAIN
+from .const import (
+    CONF_LITELLM_KEY,
+    CONF_LITELLM_URL,
+    CONF_RISKY,
+    DEFAULT_RISKY,
+    DOMAIN,
+)
 from .execute import NotSupported, UnknownEntity, execute
 from .llm_loop import ModelUnavailable, run_model
 from .phrases import phrase, yes_no
@@ -145,6 +151,13 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         for conversation_id in list(self._last):
             if (now - self._last[conversation_id].at).total_seconds() > REPEAT_SECONDS:
                 del self._last[conversation_id]
+
+    def _model_configured(self) -> bool:
+        """True when the entry holds a model to give a weak command to."""
+        return bool(
+            self._entry.data.get(CONF_LITELLM_URL)
+            and self._entry.data.get(CONF_LITELLM_KEY)
+        )
 
     def _any_exposed(self, entity_ids: list[str], risky: list[str]) -> bool:
         """Tell if a risky entity of the decision is exposed to conversation."""
@@ -266,7 +279,26 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
             return self._reply(language, conversation_id, speech)
 
         if route == DEVICE_COMMAND:
-            # A device command without an act is a question or a refusal.
+            # A device command without an act is a question, a weak route
+            # answer, or a refusal. The built-in agent only matches the
+            # sentences it knows, so the configured model gets the request when
+            # no risky device is one of the candidates: it sees the exposed
+            # entities and can act. A risky candidate stays with the built-in
+            # agent, because the model would act without the confirmation.
+            risky = self._entry.options.get(CONF_RISKY, DEFAULT_RISKY)
+            candidates = decision.get("options") or []
+            if self._model_configured() and not any(
+                is_risky(self.hass, entity_id, risky) for entity_id in candidates
+            ):
+                try:
+                    reply, result = await run_model(
+                        self.hass, self._entry, user_input, chat_log, "complex"
+                    )
+                except ModelUnavailable:
+                    self._async_log(record_id, {"status": "builtin"})
+                    return await self._async_builtin(user_input)
+                self._async_log(record_id, result)
+                return self._reply(language, conversation_id, reply)
             self._async_log(record_id, {"status": "builtin"})
             return await self._async_builtin(user_input)
 

@@ -38,6 +38,7 @@ from custom_components.voice_router.const import (
     DOMAIN,
 )
 from custom_components.voice_router.conversation import VoiceRouterAgent
+from custom_components.voice_router.llm_loop import ModelUnavailable
 
 ROUTER = "http://router"
 ROUTE_URL = f"{ROUTER}/route"
@@ -45,6 +46,7 @@ LOG_URL = f"{ROUTER}/log"
 AGENT_ID = "conversation.voice_router"
 CONVERSATION_ID = "conv-1"
 CONFIRM_PT = "Tem certeza? Diga sim para confirmar."
+CONVERSATION_MODULE = "custom_components.voice_router.conversation"
 BUILTIN_MODULE = "custom_components.voice_router.conversation.async_converse"
 
 
@@ -55,6 +57,8 @@ def _decision(
     action: str = "turn_off",
     entity_ids: list[str] | None = None,
     record_id: str = "record-1",
+    options: list[str] | None = None,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Make the decision that the router gives."""
     return {
@@ -64,6 +68,8 @@ def _decision(
         "entity_ids": entity_ids or [],
         "value": None,
         "record_id": record_id,
+        "options": options,
+        "reason": reason,
     }
 
 
@@ -233,26 +239,95 @@ async def test_the_router_down_hands_over_to_the_builtin_agent(
     assert kwargs == {"agent_id": HOME_ASSISTANT_AGENT, "device_id": None}
 
 
-async def test_no_act_hands_over_to_the_builtin_agent(
+async def test_no_act_goes_to_the_model_and_the_builtin_agent_when_it_is_down(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:
-    """A device command without an act goes to the built-in agent."""
+    """A device command without an act goes to the model, and falls back.
+
+    The model answers a weak command. When the model is unavailable, the
+    built-in agent is still the answer of last resort.
+    """
     calls = async_mock_service(hass, "light", "turn_off")
     hass.states.async_set("light.kitchen", "on")
     await _setup(
         hass,
         entry,
         aioclient_mock,
-        _decision(entity_ids=["light.kitchen"], act=False),
+        _decision(entity_ids=["light.kitchen"], act=False, options=["light.kitchen"]),
     )
     builtin = _result("from the built-in agent")
 
-    with patch(BUILTIN_MODULE, AsyncMock(return_value=builtin)) as mock:
+    with (
+        patch(
+            CONVERSATION_MODULE + ".run_model",
+            AsyncMock(side_effect=ModelUnavailable("down")),
+        ) as model,
+        patch(BUILTIN_MODULE, AsyncMock(return_value=builtin)) as fallback,
+    ):
         result = await _ask(hass, "Qual é o estado da luz?")
 
+    model.assert_awaited_once()
+    fallback.assert_awaited_once()
     assert result is builtin
-    mock.assert_awaited_once()
     assert calls == []
+
+
+async def test_a_device_command_that_did_not_act_goes_to_the_model(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A weak device command goes to the model, not to the intents agent.
+
+    The built-in agent only matches sentences it knows. The model can look at
+    the exposed entities and act, so it gets the request when no risky device
+    is one of the candidates.
+    """
+    hass.states.async_set("light.kitchen", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(
+            act=False,
+            reason="low_confidence",
+            options=["light.kitchen"],
+        ),
+    )
+    reply = ("Posso apagar a luz da cozinha.", {"status": "done"})
+
+    with (
+        patch(
+            CONVERSATION_MODULE + ".run_model", AsyncMock(return_value=reply)
+        ) as model,
+        patch(BUILTIN_MODULE, AsyncMock()) as builtin,
+    ):
+        result = await _ask(hass, "apaga a luz ali")
+
+    model.assert_awaited_once()
+    builtin.assert_not_awaited()
+    assert _speech(result) == reply[0]
+
+
+async def test_a_weak_device_command_with_a_risky_candidate_stays_builtin(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock, car_charger: str
+) -> None:
+    """The model must not act on a risky device without the confirmation."""
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(act=False, reason="low_confidence", options=[car_charger]),
+    )
+    builtin = _result("from the built-in agent")
+
+    with (
+        patch(CONVERSATION_MODULE + ".run_model", AsyncMock()) as model,
+        patch(BUILTIN_MODULE, AsyncMock(return_value=builtin)) as fallback,
+    ):
+        result = await _ask(hass, "desliga aquilo")
+
+    model.assert_not_awaited()
+    fallback.assert_awaited_once()
+    assert result is builtin
 
 
 async def test_a_risky_device_asks_first_and_acts_on_yes(
