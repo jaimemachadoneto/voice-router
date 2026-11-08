@@ -593,7 +593,10 @@ async def test_the_request_carries_the_web_search_tool(
     with _patch_client(client):
         await _ask(hass, "Vai chover em Fortaleza?")
 
-    assert client.calls[0]["mcp_servers"] == ["web_search"]
+    # The OpenAI client rejects an unknown keyword, so the parameter travels in
+    # extra_body, which the client forwards as JSON without checking it.
+    assert client.calls[0]["extra_body"] == {"mcp_servers": ["web_search"]}
+    assert "mcp_servers" not in client.calls[0]
 
 
 async def test_the_prompt_says_the_house_is_not_the_world(
@@ -614,3 +617,29 @@ async def test_the_prompt_says_the_house_is_not_the_world(
 
     sent = json.dumps(client.calls[0]["messages"], ensure_ascii=False)
     assert "not the weather of another place" in sent
+
+
+async def test_a_client_error_degrades_instead_of_ending_the_turn(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Any failure of the model call raises ModelUnavailable.
+
+    A TypeError from the OpenAI client, because of a keyword it does not know,
+    reached the pipeline as "Unexpected error during intent recognition": the
+    person heard nothing at all. Only the errors of the OpenAI library were
+    caught.
+    """
+    client = FakeClient()
+    client.answers = [TypeError("unexpected keyword argument")]
+
+    with (
+        _patch_client(client),
+        pytest.raises(ModelUnavailable),
+    ):
+        await run_model(
+            hass,
+            entry,
+            _user_input(),
+            ChatLog(hass, CONVERSATION_ID),
+            "chat",
+        )

@@ -235,9 +235,12 @@ async def run_model(
                 if tools:
                     kwargs["tools"] = tools
                 if MCP_SERVERS:
-                    # The gateway runs these, so the chat route reaches the
-                    # world without the tools that act on a device.
-                    kwargs["mcp_servers"] = list(MCP_SERVERS)
+                    # The OpenAI client refuses a keyword it does not know, so
+                    # the parameter travels in extra_body, which it forwards as
+                    # JSON without checking. The gateway runs these tools, so
+                    # the chat route reaches the world without the tools that
+                    # act on a device.
+                    kwargs["extra_body"] = {"mcp_servers": list(MCP_SERVERS)}
                 stream = await client.chat.completions.create(**kwargs)
                 async for content in chat_log.async_add_delta_content_stream(
                     user_input.agent_id, _transform_stream(stream, usage_holder)
@@ -245,6 +248,13 @@ async def run_model(
                     messages.extend([_to_openai(content)])
             except openai.APIConnectionError, openai.APITimeoutError:
                 raise ModelUnavailable("The model is not reachable") from None
+            except (TypeError, ValueError) as err:
+                # A mistake in the call itself, such as a keyword that the
+                # OpenAI client does not know. It reached the pipeline as
+                # "Unexpected error during intent recognition" and the person
+                # heard nothing, so it degrades like any other failure.
+                _LOGGER.exception("The model call is not usable")
+                raise ModelUnavailable(f"The model call failed: {err}") from None
             except openai.APIStatusError as err:
                 # A 5xx is a problem of the service. A 4xx is a problem of the
                 # configuration: a model name that the gateway does not know, or
