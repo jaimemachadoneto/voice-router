@@ -637,6 +637,27 @@ async def test_a_web_search_call_that_the_gateway_does_not_run_degrades(
     assert _speech(result) == NO_INTERNET_PT
 
 
+async def test_the_chat_prompt_bounds_the_length_of_the_answer(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A spoken answer must be short.
+
+    The model answered a weather question with eight sentences, a list and a
+    15-day forecast. The house hears the answer aloud, so the prompt names a
+    limit and stops the list.
+    """
+    client = FakeClient()
+    client.answers = [_text_answer()]
+    await _setup(hass, entry, aioclient_mock, "chat")
+
+    with _patch_client(client):
+        await _ask(hass, "Vai chover em Fortaleza?")
+
+    system = client.calls[0]["messages"][0]["content"]
+    assert "at most two sentences" in system
+    assert "Do not use a list" in system
+
+
 async def test_the_prompt_says_the_house_is_not_the_world(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:
