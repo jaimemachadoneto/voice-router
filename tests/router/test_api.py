@@ -71,6 +71,9 @@ PAYLOAD = {
     "registry_hash": "sha256:abc",
 }
 
+# The name of each entity of the invented house, keyed by entity id.
+PAYLOAD_NAMES = {entity["entity_id"]: entity["name"] for entity in PAYLOAD["entities"]}
+
 ROUTE_BODY = {
     "text": "turn off the fan",
     "language": "en",
@@ -530,6 +533,39 @@ def test_log_for_an_unknown_record_is_404(settings: Settings):
         json={"record_id": "missing", "result": {}},
         headers=HEADERS,
     )
+    assert response.status_code == 404
+
+
+def test_a_record_gives_its_decision_and_the_names_of_the_entities(settings: Settings):
+    """The detail view reads one record and shows names, not entity ids.
+
+    The dashboard shows how one command was decided, so it needs the whole
+    decision of that record. It sends the names of the entities that the
+    record mentions, and the page needs no second call and no registry.
+    """
+    store = Store(settings.db)
+    client = make_client(settings, store, FakeLocal(answer=LOCAL_ANSWER))
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+    record_id = client.post("/route", json=LIGHTS_BODY, headers=HEADERS).json()[
+        "record_id"
+    ]
+
+    response = client.get(f"/records/{record_id}", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["record"]["id"] == record_id
+    assert body["record"]["request"]["text"] == "turn off the lights"
+    assert body["record"]["decision"]["route"] == "device_command"
+    assert set(body["record"]["decision"]["options"]) <= set(body["names"])
+    for entity_id, name in body["names"].items():
+        assert entity_id in PAYLOAD_NAMES
+        assert name == PAYLOAD_NAMES[entity_id]
+
+
+def test_an_unknown_record_is_404(settings: Settings):
+    client = make_client(settings)
+    response = client.get("/records/missing", headers=HEADERS)
     assert response.status_code == 404
 
 

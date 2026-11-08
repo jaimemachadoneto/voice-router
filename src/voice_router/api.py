@@ -200,6 +200,25 @@ def app_from_env() -> FastAPI:
     return create_app(settings, jev, Store(settings.db), build_local(settings))
 
 
+def _mentioned(record: dict[str, Any], names: dict[str, str]) -> dict[str, str]:
+    """The names of the entities that one record mentions, by entity id.
+
+    The detail view shows one command, so it needs the names of that command
+    only. A name that the house does not hold is left out.
+    """
+    decision = record.get("decision") or {}
+    ids: set[str] = set(decision.get("entity_ids") or [])
+    ids.update(decision.get("options") or [])
+    ids.update(decision.get("shadow_options") or [])
+    jev_device = (decision.get("jev") or {}).get("device") or {}
+    if jev_device.get("choice"):
+        ids.add(jev_device["choice"])
+    local = decision.get("local") or {}
+    if local.get("choice"):
+        ids.add(local["choice"])
+    return {entity_id: names[entity_id] for entity_id in ids if entity_id in names}
+
+
 def create_app(
     settings: Settings, jev: Jev, store: Store, local: Jev | None = None
 ) -> FastAPI:
@@ -434,6 +453,26 @@ def create_app(
             else {}
         )
         return stats_summary(store.all_records(), names)
+
+    @app.get("/records/{record_id}")
+    def get_record(record_id: str, _: None = Depends(check_token)) -> dict[str, Any]:
+        """Return one record of the log, and the names that it mentions.
+
+        The detail view shows how one command was decided. The record holds
+        the whole decision, so the page needs one call for the record and the
+        names of the house. The router names the devices and never runs an
+        action.
+        """
+        record = store.record(record_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no record")
+        house = app.state.house
+        names = (
+            {entity_id: entity.name for entity_id, entity in house.entities.items()}
+            if house is not None
+            else {}
+        )
+        return {"record": record, "names": _mentioned(record, names)}
 
     @app.get("/health")
     def health() -> dict[str, Any]:
