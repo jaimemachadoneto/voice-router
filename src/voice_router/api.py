@@ -200,12 +200,17 @@ def app_from_env() -> FastAPI:
     return create_app(settings, jev, Store(settings.db), build_local(settings))
 
 
-def _mentioned(record: dict[str, Any], names: dict[str, str]) -> dict[str, str]:
-    """The names of the entities that one record mentions, by entity id.
+def _mentioned(
+    record: dict[str, Any], house: House | None
+) -> dict[str, dict[str, Any]]:
+    """The entry of each entity that one record mentions, by entity id.
 
-    The detail view shows one command, so it needs the names of that command
-    only. A name that the house does not hold is left out.
+    The detail view shows one command, so it needs the entries of that command
+    only. Many devices share one name, so an entry also holds the area, the
+    aliases and the type. An entity that the house does not hold is left out.
     """
+    if house is None:
+        return {}
     decision = record.get("decision") or {}
     ids: set[str] = set(decision.get("entity_ids") or [])
     ids.update(decision.get("options") or [])
@@ -216,7 +221,17 @@ def _mentioned(record: dict[str, Any], names: dict[str, str]) -> dict[str, str]:
     local = decision.get("local") or {}
     if local.get("choice"):
         ids.add(local["choice"])
-    return {entity_id: names[entity_id] for entity_id in ids if entity_id in names}
+    return {
+        entity_id: {
+            "name": entity.name,
+            "area": entity.area,
+            "aliases": list(entity.aliases),
+            "risky": entity.risky,
+            "domain": entity.domain,
+        }
+        for entity_id in ids
+        if (entity := house.entities.get(entity_id)) is not None
+    }
 
 
 def create_app(
@@ -466,13 +481,9 @@ def create_app(
         record = store.record(record_id)
         if record is None:
             raise HTTPException(status_code=404, detail="no record")
-        house = app.state.house
-        names = (
-            {entity_id: entity.name for entity_id, entity in house.entities.items()}
-            if house is not None
-            else {}
-        )
-        return {"record": record, "names": _mentioned(record, names)}
+        devices = _mentioned(record, app.state.house)
+        names = {entity_id: device["name"] for entity_id, device in devices.items()}
+        return {"record": record, "names": names, "devices": devices}
 
     @app.get("/health")
     def health() -> dict[str, Any]:

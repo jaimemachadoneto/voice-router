@@ -563,6 +563,32 @@ def test_a_record_gives_its_decision_and_the_names_of_the_entities(settings: Set
         assert name == PAYLOAD_NAMES[entity_id]
 
 
+def test_a_record_gives_the_whole_entry_of_each_entity_that_it_mentions(
+    settings: Settings,
+):
+    """Many devices share one name, so the detail view needs the area and more."""
+    store = Store(settings.db)
+    client = make_client(settings, store, FakeLocal(answer=LOCAL_ANSWER))
+    client.post("/sync", json=PAYLOAD, headers=HEADERS)
+    record_id = client.post("/route", json=LIGHTS_BODY, headers=HEADERS).json()[
+        "record_id"
+    ]
+
+    body = client.get(f"/records/{record_id}", headers=HEADERS).json()
+
+    assert set(body["devices"]) == set(body["names"])
+    by_id = {entity["entity_id"]: entity for entity in PAYLOAD["entities"]}
+    for entity_id, device in body["devices"].items():
+        source = by_id[entity_id]
+        assert device == {
+            "name": source["name"],
+            "area": source["area"],
+            "aliases": source["aliases"],
+            "risky": source["risky"],
+            "domain": entity_id.split(".")[0],
+        }
+
+
 def test_an_unknown_record_is_404(settings: Settings):
     client = make_client(settings)
     response = client.get("/records/missing", headers=HEADERS)
