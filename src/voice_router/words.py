@@ -11,6 +11,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 NONE = "none"  # the key of "no device" in the options of the model
 WINDOW = 0.2  # an option at least this close to the best one acts too
@@ -89,18 +90,19 @@ def _area_pattern(phrase: str, connectors: Sequence[str]) -> re.Pattern[str]:
     return re.compile(rf"\b{gap.join(re.escape(word) for word in words)}\b")
 
 
-def _named_areas(
+def _area_matches(
     text: str,
     area_words: Mapping[str, Sequence[str]],
     connectors: Sequence[str] = (),
-) -> set[str]:
-    """The areas that the text names.
+) -> list[tuple[int, int, str]]:
+    """The areas that the text names, with the place of each match.
 
     A room word sits inside the name of another room: "quarto de hóspedes"
     holds "quarto", an alias of the bedroom. A match that a longer match covers
     is therefore dropped, so the guest room stays and the bedroom does not. Two
     rooms named at different places in the sentence are both kept, because
-    "a luz da sala e da garagem" is two rooms and not one.
+    "a luz da sala e da garagem" is two rooms and not one. A place is a start
+    and an end in the folded text.
     """
     norm = fold(text)
     matches: list[tuple[int, int, int, str]] = []
@@ -122,7 +124,50 @@ def _named_areas(
         )
         if not covered:
             kept.append((start, end, length, area))
-    return {area for _, _, _, area in kept}
+    # The name and an alias of one area can match the same words.
+    return list(
+        dict.fromkeys((start, end, area) for start, end, _, area in sorted(kept))
+    )
+
+
+def _named_areas(
+    text: str,
+    area_words: Mapping[str, Sequence[str]],
+    connectors: Sequence[str] = (),
+) -> set[str]:
+    """The areas that the text names."""
+    return {area for _, _, area in _area_matches(text, area_words, connectors)}
+
+
+def _near_misses(
+    text: str,
+    area_words: Mapping[str, Sequence[str]],
+    named: set[str],
+    connectors: Sequence[str],
+) -> list[dict[str, str]]:
+    """The areas whose words are all in the text, but not together.
+
+    A name matches when its words sit together, with connecting words between
+    them at most. A phrase that fails this rule, with all its words in the text,
+    is a near miss. It tells a person why the room did not narrow the set. An
+    area that matched, by any phrase, has no near miss.
+    """
+    norm = fold(text)
+    said = set(re.findall(r"\w+", norm))
+    skipped = {fold(word) for word in connectors}
+    found: list[dict[str, str]] = []
+    for area, options in area_words.items():
+        if area in named:
+            continue
+        for word in options:
+            phrase = fold(word)
+            core = [part for part in phrase.split() if part not in skipped]
+            if len(core) < 2 or _area_pattern(phrase, connectors).search(norm):
+                continue
+            if all(part in said for part in core):
+                found.append({"area": area, "phrase": word})
+                break
+    return found
 
 
 def word_filter(
@@ -135,6 +180,30 @@ def word_filter(
     connectors: Sequence[str] = (),
 ) -> list[str] | None:
     """The entities that the words of a command select.
+
+    See `word_filter_trace`. This function gives the options and no record.
+    """
+    return word_filter_trace(
+        text,
+        entity_list,
+        domain_words,
+        area_words,
+        entity_words,
+        default_room,
+        connectors,
+    )[0]
+
+
+def word_filter_trace(
+    text: str,
+    entity_list: Sequence[Entity],
+    domain_words: Mapping[str, Sequence[str]],
+    area_words: Mapping[str, Sequence[str]] | None = None,
+    entity_words: Mapping[str, Sequence[str]] | None = None,
+    default_room: str | None = None,
+    connectors: Sequence[str] = (),
+) -> tuple[list[str] | None, dict[str, Any]]:
+    """The entities that the words of a command select, and the inputs used.
 
     A device word such as "luz" names a domain, and with it the entities of that
     domain. An entity of another domain joins the set when its name or an alias
@@ -150,26 +219,56 @@ def word_filter(
     `entity_words` holds the words that name one entity, such as "towel warmer".
     Such a word selects that entity by itself, and a room does not narrow it.
 
-    `None` means that the text names no device and no entity, so the caller can
-    use another source of options. An empty list means that the text names a
-    device and the house has no such device in the named room: do not act.
+    The first item is `None` when the text names no device and no entity, so the
+    caller can use another source of options. An empty list means that the text
+    names a device and the house has no such device in the named room: do not
+    act. The second item records each input of the decision, so a person can see
+    why the set is what it is: the device words, the room words, the rooms that
+    nearly matched, the entity words, the satellite room and the count.
     """
+    norm = fold(text)
     domains = _named(text, domain_words)
-    named_entities = _named_entities(text, entity_list, entity_words, domain_words)
+    hits = _entity_word_hits(text, entity_list, entity_words, domain_words)
+    named_entities = [entity_id for entity_id, _ in hits]
+    trace: dict[str, Any] = {
+        "domains": {
+            domain: [w for w in options if has_phrase(norm, fold(w))]
+            for domain, options in domain_words.items()
+            if domain in domains
+        },
+        "rooms": [],
+        "near_misses": [],
+        "entity_words": [{"entity_id": i, "word": w} for i, w in hits],
+        "satellite_room": default_room,
+        "satellite_room_used": False,
+        "fallback": False,
+        "count": None,
+    }
     if not domains and not named_entities:
-        return None
+        return None, trace
     words = [fold(w) for domain in domains for w in domain_words[domain]]
-    named_rooms = _named_areas(text, area_words, connectors) if area_words else set()
+    matches = _area_matches(text, area_words, connectors) if area_words else []
+    named_rooms = {area for _, _, area in matches}
+    trace["rooms"] = [
+        {"area": area, "said": norm[start:end]} for start, end, area in matches
+    ]
+    if area_words:
+        trace["near_misses"] = _near_misses(text, area_words, named_rooms, connectors)
     defaulted = not named_rooms and bool(default_room)
     rooms = set(named_rooms)
     if defaulted and default_room is not None:
         rooms = {default_room}
     found = _by_domain(entity_list, domains, words, rooms)
+    if defaulted:
+        trace["satellite_room_used"] = bool(found)
+        trace["fallback"] = not found
     if not found and defaulted:
         # The room of the satellite is a default and not a filter: the person
         # may mean a device of another room, so the whole set stays as options.
         found = _by_domain(entity_list, domains, words, set())
-    return [*found, *(i for i in named_entities if i not in found)]
+    options = [*found, *(i for i in named_entities if i not in found)]
+    trace["count"] = len(options)
+    return options, trace
 
 
 def _by_domain(
@@ -192,13 +291,13 @@ def _by_domain(
     return out
 
 
-def _named_entities(
+def _entity_word_hits(
     text: str,
     entity_list: Sequence[Entity],
     entity_words: Mapping[str, Sequence[str]] | None,
     domain_words: Mapping[str, Sequence[str]],
-) -> list[str]:
-    """The entities whose own words are in the text.
+) -> list[tuple[str, str]]:
+    """The entities whose own words are in the text, each with the word it used.
 
     A word that names a domain, such as "luz", does not count here: the domain
     rule reads it with the room, and this rule does not narrow by room.
@@ -208,14 +307,30 @@ def _named_entities(
     norm = fold(text)
     known = {e.entity_id for e in entity_list}
     domain_terms = {fold(w) for words in domain_words.values() for w in words}
-    out = []
+    out: list[tuple[str, str]] = []
     for entity_id, words in entity_words.items():
         if entity_id not in known:
             continue
-        own = [fold(w) for w in words if fold(w) not in domain_terms]
-        if any(has_phrase(norm, w) for w in own):
-            out.append(entity_id)
+        for word in words:
+            if fold(word) not in domain_terms and has_phrase(norm, fold(word)):
+                out.append((entity_id, word))
+                break
     return out
+
+
+def _named_entities(
+    text: str,
+    entity_list: Sequence[Entity],
+    entity_words: Mapping[str, Sequence[str]] | None,
+    domain_words: Mapping[str, Sequence[str]],
+) -> list[str]:
+    """The entities whose own words are in the text."""
+    return [
+        entity_id
+        for entity_id, _ in _entity_word_hits(
+            text, entity_list, entity_words, domain_words
+        )
+    ]
 
 
 def area_words(

@@ -135,3 +135,13 @@ def test_the_filter_reads_an_area_with_a_connecting_word():
     assert spoken.source == "domain"
     shadow = house.filter_shadow("liga a luz do bedroom do main", None)
     assert shadow.options == ["light.main_bedroom"]
+
+
+def test_the_filter_result_holds_the_inputs_of_the_filter(house: House):
+    result = house.filter("turn off the kitchen light", None)
+    assert result.trace["domains"] == {"light": ["light"]}
+    assert result.trace["rooms"] == [{"area": "Kitchen", "said": "kitchen"}]
+    assert result.trace["count"] == 2
+    shadow = house.filter_shadow("turn off the kitchen light", None)
+    assert shadow.trace["rooms"] == [{"area": "Kitchen", "said": "kitchen"}]
+    assert house.filter("bom dia", None).trace["count"] is None

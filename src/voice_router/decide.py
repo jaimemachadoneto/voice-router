@@ -43,9 +43,10 @@ class Decision:
     `act` is True only when `entity_ids` holds the devices of the action. Every
     decision that does not act has no device and no action. `reason` tells why
     the router did not act, or why the local route did not act (`stale`).
-    `source` tells which layer decided. `local` holds the Kev answer when the
-    local route decided. `stale_since` holds the time of the sync that changed
-    the words version, when the local route is stale. `proposal` holds the
+    `source` tells which layer decided. `filter` holds every input of the word
+    filter, so the log shows why the set is what it is. `local` holds the Kev
+    answer when the local route decided. `stale_since` holds the time of the
+    sync that changed the words version, when the local route is stale. `proposal` holds the
     diagnosis answer and its candidates when the filter missed a word.
     `shadow_words` and `active_words` hold the words of each word set that the
     command used.
@@ -60,7 +61,7 @@ class Decision:
     confidence: dict[str, float]
     reason: str | None
     options: list[str] | None
-    filter_source: str
+    filter: dict | None
     jev: dict | None
     local: dict | None = None
     stale_since: str | None = None
@@ -189,7 +190,7 @@ def _no_act(
         confidence=confidence,
         reason=reason,
         options=f.options,
-        filter_source=f.source,
+        filter=f.trace,
         jev=jev,
         local=local,
     )
@@ -236,7 +237,7 @@ async def _offline(
             confidence={},
             reason=None,
             options=f.options,
-            filter_source=f.source,
+            filter=f.trace,
             jev={"error": error},
         )
     if local_task is None:
@@ -268,7 +269,7 @@ async def _offline(
         confidence={},
         reason=None,
         options=f.options,
-        filter_source=f.source,
+        filter=f.trace,
         jev={"error": error},
         local=answer,
     )
@@ -368,7 +369,7 @@ async def _decide(
                 confidence=confidence,
                 reason=None,
                 options=f.options,
-                filter_source=f.source,
+                filter=f.trace,
                 jev=record,
                 local=answer,
             )
@@ -402,7 +403,7 @@ async def _decide(
         confidence=confidence,
         reason=None,
         options=f.options,
-        filter_source=f.source,
+        filter=f.trace,
         jev=record,
     )
 

@@ -206,7 +206,7 @@ def failures(rows: list[dict]) -> str:
             "entity_ids": list(decision.entity_ids or ()),
             "reason": decision.reason,
             "options": decision.options,
-            "filter_source": decision.filter_source,
+            "filter": decision.filter,
             "jev": _jev_fields(decision),
         }
         lines.append(json.dumps(entry, ensure_ascii=False, sort_keys=True))

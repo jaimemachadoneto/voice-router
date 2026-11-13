@@ -7,6 +7,7 @@ check the act rule at each step.
 
 import asyncio
 from collections.abc import Sequence
+from dataclasses import asdict
 
 import pytest
 
@@ -806,3 +807,12 @@ async def test_offline_a_local_error_does_not_act(house: House):
     assert decision.act is False
     assert decision.reason == "low_confidence"
     assert decision.local == answer
+
+
+async def test_the_decision_holds_the_filter_record(house: House):
+    decision = await decide("turn on the kitchen table light", None, house, FakeJev())
+    assert decision.filter is not None
+    assert decision.filter["rooms"] == [{"area": "Kitchen", "said": "kitchen"}]
+    assert decision.filter["count"] == len(decision.options or ())
+    assert not hasattr(decision, "filter_source")
+    assert "filter" in asdict(decision)
