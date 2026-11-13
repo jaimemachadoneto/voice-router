@@ -86,6 +86,8 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
             "route": route,
             "jev": None,
             "kev": None,
+            "acted": [],
+            "jev_asked": False,
             "agreement": None,
             "outcome": None,
             "seconds": float(result.get("seconds") or 0.0),
@@ -104,6 +106,11 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
         "tools": [],
         "jev": names.get(jev, jev),
         "kev": names.get(kev, kev),
+        # The router asks Jev for the device only when the words leave two or
+        # more options. With one option the acted device comes from the words,
+        # so "jev: none" would mislead next to an agreement.
+        "acted": [names.get(i, i) for i in decision.get("entity_ids") or []],
+        "jev_asked": "device" in (decision.get("jev") or {}),
         # A command with no local answer cannot agree or disagree with it. The
         # row says so instead of claiming a disagreement that never happened.
         "agreement": _agreement(decision, jev=jev, kev=kev)
