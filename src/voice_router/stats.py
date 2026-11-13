@@ -36,6 +36,36 @@ def _jev_seconds(decision: dict) -> float:
     return float(device.get("seconds") or 0.0)
 
 
+def _answer(answer: dict | None, names: Mapping[str, str]) -> dict | None:
+    """One answer with its choice and each probability, under the device names.
+
+    The dashboard shows the whole answer, so a person sees what the model said
+    about each option and not only the winner. An error stays an error.
+    """
+    if not answer:
+        return None
+    if "error" in answer:
+        return {"error": answer["error"]}
+    probabilities = answer.get("probabilities") or {}
+    choice = answer.get("choice") or NONE
+    return {
+        "choice": names.get(choice, choice),
+        "probabilities": {names.get(key, key): value for key, value in probabilities.items()},
+    }
+
+
+def _jev_answer(decision: dict, names: Mapping[str, str]) -> dict | None:
+    """The route, action and device answers of Jev, or its error, or None."""
+    jev = decision.get("jev") or {}
+    if "error" in jev:
+        return {"error": jev["error"]}
+    answers = {
+        key: _answer(jev.get(key), names if key == "device" else {})
+        for key in ("route", "action", "device")
+    }
+    return answers if any(answers.values()) else None
+
+
 def _compared(local: dict) -> bool:
     """True when the local route gave an answer, so the two can be compared."""
     return bool(local) and "error" not in local
@@ -58,6 +88,9 @@ def _outcome(decision: dict, *, result: dict) -> str:
         return "cancelled"
     if result.get("status") == "builtin":
         return "builtin"
+    if decision.get("act") is not True and result.get("model"):
+        # The router named no device, so the complex model ran the command.
+        return "model"
     if result.get("pending") and result.get("status") == "done":
         return "confirmed"
     if result.get("pending"):
@@ -90,6 +123,9 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
             "room": request.get("room"),
             "language": request.get("language") or "en",
             "route": route,
+            "jev_answer": None,
+            "kev_answer": None,
+            "reason": decision.get("reason"),
             "jev": None,
             "kev": None,
             "acted": [],
@@ -108,8 +144,11 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
         "room": request.get("room"),
         "language": request.get("language") or "en",
         "route": route,
-        "model": None,
-        "tools": [],
+        "model": result.get("model"),
+        "tools": list(result.get("tools") or []),
+        "jev_answer": _jev_answer(decision, names),
+        "kev_answer": _answer(local, names),
+        "reason": decision.get("reason"),
         "jev": names.get(jev, jev),
         "kev": names.get(kev, kev),
         # The router asks Jev for the device when the words leave two or more

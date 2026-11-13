@@ -204,6 +204,13 @@ def test_a_recent_row_holds_the_request_the_choices_and_the_agreement():
         "tools": [],
         "jev": "light.office_lamp",
         "kev": "light.office_lamp",
+        "jev_answer": {
+            "route": None,
+            "action": None,
+            "device": {"choice": "light.office_lamp", "probabilities": {}},
+        },
+        "kev_answer": {"choice": "light.office_lamp", "probabilities": {}},
+        "reason": None,
         "acted": [],
         "jev_asked": True,
         "agreement": "agree",
@@ -405,3 +412,98 @@ def test_a_row_where_jev_failed_says_that_jev_was_asked():
     row = summary([failed])["recent"][0]
 
     assert row["jev_asked"] is True
+
+
+JEV_FULL = {
+    "route": {
+        "choice": "device_command",
+        "probabilities": {"device_command": 0.87, "chat": 0.0, "complex": 0.13},
+    },
+    "action": {
+        "choice": "turn_on",
+        "probabilities": {"turn_on": 0.98, "turn_off": 0.01, "set": 0.0, "status": 0.01},
+    },
+    "device": {
+        "choice": "light.office_lamp",
+        "probabilities": {"light.office_lamp": 0.6, "light.office_ceiling": 0.2, "none": 0.2},
+    },
+}
+KEV_FULL = {
+    "choice": "light.office_lamp",
+    "probabilities": {"light.office_lamp": 0.57, "light.office_ceiling": 0.07, "none": 0.36},
+    "seconds": 0.27,
+}
+
+
+def test_a_row_holds_the_whole_jev_and_kev_answers_with_the_device_names():
+    record = _record("r1", local=KEV_FULL)
+    record["decision"]["jev"] = JEV_FULL
+    names = {"light.office_lamp": "Lamp", "light.office_ceiling": "Ceiling"}
+
+    row = summary([record], names)["recent"][0]
+
+    assert row["jev_answer"] == {
+        "route": {"choice": "device_command", "probabilities": JEV_FULL["route"]["probabilities"]},
+        "action": {"choice": "turn_on", "probabilities": JEV_FULL["action"]["probabilities"]},
+        "device": {
+            "choice": "Lamp",
+            "probabilities": {"Lamp": 0.6, "Ceiling": 0.2, "none": 0.2},
+        },
+    }
+    assert row["kev_answer"] == {
+        "choice": "Lamp",
+        "probabilities": {"Lamp": 0.57, "Ceiling": 0.07, "none": 0.36},
+    }
+
+
+def test_a_row_where_jev_failed_holds_the_error_and_no_answers():
+    record = _record("r1", jev_device=None)
+    record["decision"]["jev"] = {"error": "timeout"}
+
+    row = summary([record])["recent"][0]
+
+    assert row["jev_answer"] == {"error": "timeout"}
+
+
+def test_a_row_of_an_old_record_has_no_whole_answers():
+    record = _record("r1", has_local=False, jev_device=None)
+
+    row = summary([record])["recent"][0]
+
+    assert row["jev_answer"] is None
+    assert row["kev_answer"] is None
+
+
+def test_a_row_where_kev_failed_holds_the_error():
+    record = _record("r1", local={"error": "timeout"})
+
+    assert summary([record])["recent"][0]["kev_answer"] == {"error": "timeout"}
+
+
+def test_a_row_says_why_the_router_did_not_act():
+    record = _record("r1", act=False)
+    record["decision"]["reason"] = "low_confidence"
+
+    assert summary([record])["recent"][0]["reason"] == "low_confidence"
+    assert summary([_record("r2")])["recent"][0]["reason"] is None
+
+
+def test_a_device_command_that_the_model_handled_shows_the_model_and_its_tools():
+    record = _record(
+        "r1",
+        act=False,
+        result={"model": "voice-complex", "tools": ["intent__HassTurnOn"], "seconds": 2.9},
+    )
+
+    row = summary([record])["recent"][0]
+
+    assert row["model"] == "voice-complex"
+    assert row["tools"] == ["intent__HassTurnOn"]
+    assert row["outcome"] == "model"
+
+
+def test_a_device_command_that_acted_has_no_model():
+    row = summary([_record("r1", result={"status": "done"})])["recent"][0]
+
+    assert row["model"] is None
+    assert row["outcome"] == "done"
