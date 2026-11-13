@@ -58,11 +58,16 @@ class WordData:
     version: str = ""
 
     def connector_words(self) -> tuple[str, ...]:
-        """The folded connecting words of every language, with no duplicate."""
+        """The folded connecting words of every language, with no duplicate.
+
+        A blank word is dropped. An empty alternative in the room pattern would
+        make the match very slow on a long run of spaces.
+        """
         found: dict[str, None] = {}
         for words in self.connectors.values():
             for word in words:
-                found[fold(word)] = None
+                if folded := fold(word).strip():
+                    found[folded] = None
         return tuple(found)
 
 
@@ -153,9 +158,10 @@ def load_word_data(house_path: Path | None) -> WordData:
             entity_id: list(words)
             for entity_id, words in reviewed.get("shadow", {}).items()
         },
+        # A sync rebuilds the generated part and does not keep this key, so the
+        # connecting words come from the general file and the reviewed part.
         connectors=_join_map(
-            _join_map(general.get("connectors", {}), generated.get("connectors", {})),
-            reviewed.get("connectors", {}),
+            general.get("connectors", {}), reviewed.get("connectors", {})
         ),
         version="sha256:" + digest,
     )

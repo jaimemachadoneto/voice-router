@@ -46,8 +46,9 @@ class Decision:
     `source` tells which layer decided. `filter` holds every input of the word
     filter, so the log shows why the set is what it is. `local` holds the Kev
     answer when the local route decided. `stale_since` holds the time of the
-    sync that changed the words version, when the local route is stale. `proposal` holds the
-    diagnosis answer and its candidates when the filter missed a word.
+    sync that changed the words version, when the local route is stale.
+    `proposal` holds the diagnosis answer and its candidates when the filter
+    missed a word.
     `shadow_words` and `active_words` hold the words of each word set that the
     command used.
     """

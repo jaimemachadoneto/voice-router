@@ -58,10 +58,11 @@ of both files.
 
 A person says "quarto do casal" for the area "Quarto Casal". The key
 `connectors` lists, for each language, the words that may sit between two
-words of an area name. A name matches with up to two connecting words between
-two of its words. The words of all languages apply to every command.
+words of an area name. A name matches when up to two connecting words sit
+between two words of the name. The words of all languages apply to every command.
 
-To add a word for your house, put it in the reviewed part of the house file:
+To add a connecting word for your house, put it in the `reviewed` part of the
+house file. The general file and the `reviewed` part are the only sources:
 
 ```json
 { "reviewed": { "connectors": { "pt": ["no", "na"] } } }

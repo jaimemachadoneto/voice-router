@@ -814,5 +814,20 @@ async def test_the_decision_holds_the_filter_record(house: House):
     assert decision.filter is not None
     assert decision.filter["rooms"] == [{"area": "Kitchen", "said": "kitchen"}]
     assert decision.filter["count"] == len(decision.options or ())
-    assert not hasattr(decision, "filter_source")
-    assert "filter" in asdict(decision)
+    assert asdict(decision)["filter"] == decision.filter
+
+
+async def test_a_decision_that_does_not_act_keeps_the_filter_record(house: House):
+    jev = FakeJev(route="chat", action="turn_off")
+    decision = await decide("turn off the office light", None, house, jev)
+    assert decision.act is False
+    assert decision.filter is not None
+    assert decision.filter["count"] == len(decision.options or ())
+
+
+async def test_the_offline_gate_keeps_the_filter_record(house: House):
+    jev = FakeJev(error=JevError("no answer"))
+    decision = await decide("turn off the fan", None, house, jev)
+    assert decision.source == "words"
+    assert decision.filter is not None
+    assert decision.filter["count"] == 1

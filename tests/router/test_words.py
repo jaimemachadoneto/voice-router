@@ -4,6 +4,8 @@ The tests use an invented house of named entities and the words of each domain,
 so they check the rules of the filter without a model.
 """
 
+import time
+
 from voice_router import words
 from voice_router.words import Entity, _named_areas, word_filter
 
@@ -479,3 +481,50 @@ def test_word_filter_gives_the_options_of_the_trace():
     text = "liga a luz do kitchen"
     options, _ = traced(text, TRACE_AREAS)
     assert words.word_filter(text, filter_house(), WORDS, TRACE_AREAS) == options
+
+
+def test_a_blank_connector_does_not_slow_the_room_match():
+    areas = {"Quarto Casal": ["Quarto Casal"]}
+    start = time.perf_counter()
+    assert _named_areas("quarto" + " " * 2000 + "x", areas, ("", "do")) == set()
+    assert time.perf_counter() - start < 0.5
+
+
+def test_a_leading_connecting_word_does_not_extend_the_match():
+    _, trace = traced("liga a luz do kitchen do", TRACE_AREAS, connectors=("do",))
+    assert trace["rooms"] == [{"area": "Kitchen", "said": "kitchen"}]
+
+
+def test_an_area_matched_by_another_phrase_has_no_near_miss():
+    areas = {"Closet Suite": ["Closet Suite", "walk in"]}
+    _, trace = traced("liga a luz do closet walk in suite", areas)
+    assert trace["rooms"] == [{"area": "Closet Suite", "said": "walk in"}]
+    assert trace["near_misses"] == []
+
+
+def test_a_near_miss_ignores_the_connecting_words_of_the_area_name():
+    areas = {"Quarto de Hospedes": ["Quarto de Hospedes"]}
+    _, trace = traced("liga a luz do hospedes quarto", areas, connectors=("de",))
+    assert trace["near_misses"] == [
+        {"area": "Quarto de Hospedes", "phrase": "Quarto de Hospedes"}
+    ]
+
+
+def test_a_longer_area_still_wins_when_said_with_an_extra_connecting_word():
+    areas = {"Quarto": ["Quarto"], "Quarto Hospedes": ["Quarto Hospedes"]}
+    assert _named_areas("a luz do quarto de hospedes", areas, PT_ES_EN) == {
+        "Quarto Hospedes"
+    }
+
+
+def test_the_satellite_room_is_not_used_when_an_entity_word_selects_the_device():
+    _, trace = traced(
+        "liga o office lamp",
+        entity_words={"switch.office_light": ["office lamp"]},
+        default_room="Kitchen",
+    )
+    assert trace["entity_words"] == [
+        {"entity_id": "switch.office_light", "word": "office lamp"}
+    ]
+    assert trace["satellite_room"] == "Kitchen"
+    assert trace["satellite_room_used"] is False and trace["fallback"] is False

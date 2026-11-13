@@ -54,3 +54,32 @@ def test_house_file_adds_connecting_words_to_a_language(tmp_path: Path):
     words = load_word_data(path)
     assert words.connectors["pt"][-2:] == ["no", "na"]
     assert "no" in words.connector_words()
+
+
+def test_connecting_words_are_folded_and_have_no_duplicate(tmp_path: Path):
+    path = tmp_path / "house.json"
+    path.write_text(
+        json.dumps({"reviewed": {"connectors": {"pt": ["À", "de"], "es": [" "]}}}),
+        encoding="utf-8",
+    )
+    found = load_word_data(path).connector_words()
+    assert found.count("de") == 1
+    assert "a" in found
+
+
+def test_a_blank_connecting_word_is_dropped(tmp_path: Path):
+    path = tmp_path / "house.json"
+    path.write_text(
+        json.dumps({"reviewed": {"connectors": {"pt": ["", "  "]}}}), encoding="utf-8"
+    )
+    assert "" not in load_word_data(path).connector_words()
+
+
+def test_a_connecting_word_in_the_generated_part_is_ignored(tmp_path: Path):
+    # A sync rebuilds the generated part and does not keep this key, so the
+    # loader reads connecting words only from the reviewed part.
+    path = tmp_path / "house.json"
+    path.write_text(
+        json.dumps({"generated": {"connectors": {"pt": ["zzz"]}}}), encoding="utf-8"
+    )
+    assert "zzz" not in load_word_data(path).connector_words()

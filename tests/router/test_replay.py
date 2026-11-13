@@ -136,3 +136,25 @@ def test_a_failure_line_holds_the_filter_record_and_no_filter_source():
     entry = json.loads(failures([row]).splitlines()[0])
     assert entry["filter"] == {"count": 1, "domains": {"light": ["lamp"]}}
     assert "filter_source" not in entry
+
+
+def test_a_failure_line_with_no_filter_record_holds_null():
+    row = {
+        "kind": "route",
+        "id": "en-04",
+        "language": "en",
+        "text": "what is the price of the lamp",
+        "expected": "chat",
+        "decision": SimpleNamespace(
+            route="device_command",
+            act=True,
+            action="turn_on",
+            entity_ids=["light.a"],
+            reason=None,
+            options=["light.a"],
+            filter=None,
+            jev={},
+        ),
+    }
+    entry = json.loads(failures([row]).splitlines()[0])
+    assert entry["filter"] is None
