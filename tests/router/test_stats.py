@@ -382,3 +382,18 @@ def test_a_chat_row_has_no_acted_device_and_no_jev_device_question():
     row = summary(records)["recent"][0]
 
     assert row["acted"] == [] and row["jev_asked"] is False
+
+
+def test_a_row_of_an_old_record_has_no_acted_device_and_jev_not_asked():
+    old = _record("r1", act=False, jev_device=None)
+    del old["decision"]["entity_ids"]
+    errored = _record("r2", act=False, jev_device=None)
+    errored["decision"]["jev"] = {"error": "timeout"}
+    gone = _record("r3", act=False, jev_device=None)
+    gone["decision"]["jev"] = None
+
+    rows = {row["id"]: row for row in summary([old, errored, gone])["recent"]}
+
+    for record_id in ("r1", "r2", "r3"):
+        assert rows[record_id]["acted"] == []
+        assert rows[record_id]["jev_asked"] is False

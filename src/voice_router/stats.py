@@ -106,9 +106,10 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
         "tools": [],
         "jev": names.get(jev, jev),
         "kev": names.get(kev, kev),
-        # The router asks Jev for the device only when the words leave two or
-        # more options. With one option the acted device comes from the words,
-        # so "jev: none" would mislead next to an agreement.
+        # The router asks Jev for the device when the words leave two or more
+        # options, and for the diagnosis when they leave no set. With one option
+        # the acted device comes from the words, so "jev: none" would mislead
+        # next to an agreement.
         "acted": [names.get(i, i) for i in decision.get("entity_ids") or []],
         "jev_asked": "device" in (decision.get("jev") or {}),
         # A command with no local answer cannot agree or disagree with it. The

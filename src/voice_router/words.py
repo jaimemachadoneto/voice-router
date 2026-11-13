@@ -76,12 +76,15 @@ MAX_CONNECTORS = 2
 def _area_pattern(phrase: str, connectors: Sequence[str]) -> re.Pattern[str]:
     """The pattern of an area phrase, with connecting words allowed inside.
 
-    Each pair of words of the phrase may have up to `MAX_CONNECTORS` connecting
-    words between them, because a person says "quarto do casal" for the area
-    "Quarto Casal". The match is on whole words. With no connecting words the
-    pattern is the exact phrase.
+    Up to `MAX_CONNECTORS` connecting words may sit between 2 adjacent words of
+    the phrase. A person says "quarto do casal" for the area "Quarto Casal".
+    The match is on whole words. With no connecting words the pattern is the
+    exact phrase.
     """
     words = phrase.split()
+    # A blank word would make an empty alternative, and the match would be very
+    # slow on a long run of spaces.
+    connectors = [word for word in connectors if word.strip()]
     if connectors:
         joined = "|".join(re.escape(word) for word in connectors)
         gap = rf"(?:\s+(?:{joined})){{0,{MAX_CONNECTORS}}}\s+"
@@ -147,10 +150,10 @@ def _near_misses(
 ) -> list[dict[str, str]]:
     """The areas whose words are all in the text, but not together.
 
-    A name matches when its words sit together, with connecting words between
-    them at most. A phrase that fails this rule, with all its words in the text,
-    is a near miss. It tells a person why the room did not narrow the set. An
-    area that matched, by any phrase, has no near miss.
+    A name matches when its words sit together, with only connecting words
+    between them. A phrase with all its words in the text, but that fails this
+    rule, is a near miss. It tells a person why the room did not narrow the set.
+    An area that matched, by any phrase, has no near miss.
     """
     norm = fold(text)
     said = set(re.findall(r"\w+", norm))
@@ -224,7 +227,8 @@ def word_filter_trace(
     names a device and the house has no such device in the named room: do not
     act. The second item records each input of the decision, so a person can see
     why the set is what it is: the device words, the room words, the rooms that
-    nearly matched, the entity words, the satellite room and the count.
+    nearly matched, the entity words, the satellite room, if the router used it,
+    the fallback and the count.
     """
     norm = fold(text)
     domains = _named(text, domain_words)
@@ -259,7 +263,9 @@ def word_filter_trace(
     if defaulted and default_room is not None:
         rooms = {default_room}
     found = _by_domain(entity_list, domains, words, rooms)
-    if defaulted:
+    if defaulted and domains:
+        # The satellite room narrows the set of a device word only. A command
+        # that an entity word selected did not use it.
         trace["satellite_room_used"] = bool(found)
         trace["fallback"] = not found
     if not found and defaulted:

@@ -24,9 +24,9 @@ from voice_router.words import (
 class FilterResult:
     """The entities that a text selects, and the inputs that selected them.
 
-    `source` is one of "none", "domain", "entity_word" or "default_room". The
-    caller uses it for the rule of the decision. `trace` holds every input of
-    the filter, and the decision keeps it in the log (see `word_filter_trace`).
+    `source` is one of "none", "domain", "entity_word" or "default_room". Only
+    the tests read it now. `trace` holds every input of the filter, and the
+    decision keeps it in the log (see `word_filter_trace`).
     """
 
     options: list[str] | None

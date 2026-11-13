@@ -145,3 +145,26 @@ def test_the_filter_result_holds_the_inputs_of_the_filter(house: House):
     shadow = house.filter_shadow("turn off the kitchen light", None)
     assert shadow.trace["rooms"] == [{"area": "Kitchen", "said": "kitchen"}]
     assert house.filter("bom dia", None).trace["count"] is None
+
+
+def test_a_spoken_area_with_a_connecting_word_is_not_the_satellite_room():
+    payload = {
+        **PAYLOAD,
+        "entities": [
+            {
+                "entity_id": "light.main_bedroom",
+                "name": "Light",
+                "area": "Bedroom Main",
+                "aliases": [],
+                "risky": False,
+            },
+            *PAYLOAD["entities"],
+        ],
+        "areas": {**PAYLOAD["areas"], "Bedroom Main": []},
+    }
+    house = House.from_sync(payload, load_word_data(None))
+    text = "liga a luz do bedroom do main"
+    for result in (house.filter(text, "Kitchen"), house.filter_shadow(text, "Kitchen")):
+        assert result.options == ["light.main_bedroom"]
+        assert result.source == "domain"
+        assert result.trace["satellite_room_used"] is False
