@@ -110,3 +110,28 @@ def test_the_house_area_words_join_the_sync_areas():
     assert "office" in house.area_aliases["Office"]
     assert "study" in house.area_aliases["Office"]
     assert "workroom" in house.area_aliases["Office"]
+
+
+def test_the_filter_reads_an_area_with_a_connecting_word():
+    payload = {
+        **PAYLOAD,
+        "entities": [
+            {
+                "entity_id": "light.main_bedroom",
+                "name": "Light",
+                "area": "Bedroom Main",
+                "aliases": [],
+                "risky": False,
+            },
+            *PAYLOAD["entities"],
+        ],
+        "areas": {**PAYLOAD["areas"], "Bedroom Main": []},
+    }
+    house = House.from_sync(payload, load_word_data(None))
+    plain = house.filter("liga a luz do bedroom main", None)
+    spoken = house.filter("liga a luz do bedroom do main", None)
+    assert plain.options == ["light.main_bedroom"]
+    assert spoken.options == ["light.main_bedroom"]
+    assert spoken.source == "domain"
+    shadow = house.filter_shadow("liga a luz do bedroom do main", None)
+    assert shadow.options == ["light.main_bedroom"]

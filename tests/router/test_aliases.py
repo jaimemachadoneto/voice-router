@@ -37,3 +37,20 @@ def test_a_question_word_is_found():
     words = load_word_data(None)
     assert has_question_word("como liga a luz?", words) is True
     assert has_question_word("liga a luz", words) is False
+
+
+def test_word_data_holds_the_connecting_words_of_each_language():
+    words = load_word_data(None)
+    assert words.connectors["pt"][:2] == ["do", "da"]
+    assert "del" in words.connectors["es"] and "of" in words.connectors["en"]
+
+
+def test_house_file_adds_connecting_words_to_a_language(tmp_path: Path):
+    path = tmp_path / "house.json"
+    path.write_text(
+        json.dumps({"reviewed": {"connectors": {"pt": ["no", "na"]}}}),
+        encoding="utf-8",
+    )
+    words = load_word_data(path)
+    assert words.connectors["pt"][-2:] == ["no", "na"]
+    assert "no" in words.connector_words()

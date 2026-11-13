@@ -5,7 +5,7 @@ so they check the rules of the filter without a model.
 """
 
 from voice_router import words
-from voice_router.words import Entity, word_filter
+from voice_router.words import Entity, _named_areas, word_filter
 
 
 def test_the_text_of_an_entity_has_the_name_and_the_area():
@@ -348,3 +348,69 @@ def test_a_longer_room_name_still_wins_over_its_own_word():
     )
 
     assert got == ["light.hospede"]
+
+
+PT_ES_EN = (
+    "do",
+    "da",
+    "de",
+    "dos",
+    "das",
+    "del",
+    "la",
+    "el",
+    "los",
+    "las",
+    "of",
+    "the",
+)
+
+
+def test_area_matches_with_a_portuguese_connecting_word():
+    areas = {"Bedroom Main": ["Bedroom Main"]}
+    assert _named_areas("liga a luz do bedroom do main", areas, PT_ES_EN) == {
+        "Bedroom Main"
+    }
+
+
+def test_area_matches_with_two_spanish_connecting_words():
+    areas = {"Room Kids": ["Room Kids"]}
+    assert _named_areas("enciende la luz del room de la kids", areas, PT_ES_EN) == {
+        "Room Kids"
+    }
+
+
+def test_area_matches_with_two_english_connecting_words():
+    areas = {"Room Kids": ["Room Kids"]}
+    assert _named_areas(
+        "turn on the light of the room of the kids", areas, PT_ES_EN
+    ) == {"Room Kids"}
+
+
+def test_area_still_matches_without_a_connecting_word():
+    areas = {"Bedroom Main": ["Bedroom Main"]}
+    assert _named_areas("liga a luz do bedroom main", areas, PT_ES_EN) == {
+        "Bedroom Main"
+    }
+
+
+def test_area_with_a_connecting_word_in_its_name_wins_over_the_shorter_area():
+    areas = {"Quarto": ["Quarto"], "Quarto de Hospedes": ["Quarto de Hospedes"]}
+    assert _named_areas("a luz do quarto de hospedes", areas, PT_ES_EN) == {
+        "Quarto de Hospedes"
+    }
+
+
+def test_a_word_that_is_not_a_connecting_word_does_not_join():
+    areas = {"Bedroom Main": ["Bedroom Main"]}
+    assert _named_areas("bedroom e main", areas, PT_ES_EN) == set()
+
+
+def test_three_connecting_words_do_not_join():
+    areas = {"Room Kids": ["Room Kids"]}
+    assert _named_areas("room of the de kids", areas, PT_ES_EN) == set()
+
+
+def test_no_connecting_words_keeps_the_exact_phrase_rule():
+    areas = {"Bedroom Main": ["Bedroom Main"]}
+    assert _named_areas("liga a luz do bedroom do main", areas) == set()

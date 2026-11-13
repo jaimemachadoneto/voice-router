@@ -45,14 +45,27 @@ checklist are in [KEV.md](KEV.md).
 The router reads the words of a command in two layers:
 
 1. The package file `src/voice_router/general_words.json` holds the general
-   words: the domains, the actions and the questions. It holds no private
-   data, so it is in git.
+   words: the domains, the actions, the questions and the connecting words.
+   It holds no private data, so it is in git.
 2. The file in `VOICE_ROUTER_HOUSE_WORDS` holds the rooms, the entities and
    the aliases of one house. It is private, so it is not in git.
 
 The router joins the two layers. The general words come first, and the house
 words follow with no duplicate. The `alias_version` in the answer is a digest
 of both files.
+
+### Connecting words
+
+A person says "quarto do casal" for the area "Quarto Casal". The key
+`connectors` lists, for each language, the words that may sit between two
+words of an area name. A name matches with up to two connecting words between
+two of its words. The words of all languages apply to every command.
+
+To add a word for your house, put it in the reviewed part of the house file:
+
+```json
+{ "reviewed": { "connectors": { "pt": ["no", "na"] } } }
+```
 
 ## Home Assistant component
 
