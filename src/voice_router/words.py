@@ -67,15 +67,33 @@ def _named(text: str, words: Mapping[str, Sequence[str]]) -> set[str]:
     }
 
 
-def _phrase_spans(text: str, phrase: str) -> list[tuple[int, int]]:
-    """The positions of the whole words of the phrase in the text."""
-    return [
-        (match.start(), match.end())
-        for match in re.finditer(rf"\b{re.escape(phrase)}\b", text)
-    ]
+# The most connecting words that may sit between two words of an area name:
+# "de la" in "cuarto de la casa" and "of the" in "room of the kids".
+MAX_CONNECTORS = 2
 
 
-def _named_areas(text: str, area_words: Mapping[str, Sequence[str]]) -> set[str]:
+def _area_pattern(phrase: str, connectors: Sequence[str]) -> re.Pattern[str]:
+    """The pattern of an area phrase, with connecting words allowed inside.
+
+    Each pair of words of the phrase may have up to `MAX_CONNECTORS` connecting
+    words between them, because a person says "quarto do casal" for the area
+    "Quarto Casal". The match is on whole words. With no connecting words the
+    pattern is the exact phrase.
+    """
+    words = phrase.split()
+    if connectors:
+        joined = "|".join(re.escape(word) for word in connectors)
+        gap = rf"(?:\s+(?:{joined})){{0,{MAX_CONNECTORS}}}\s+"
+    else:
+        gap = r"\s+"
+    return re.compile(rf"\b{gap.join(re.escape(word) for word in words)}\b")
+
+
+def _named_areas(
+    text: str,
+    area_words: Mapping[str, Sequence[str]],
+    connectors: Sequence[str] = (),
+) -> set[str]:
     """The areas that the text names.
 
     A room word sits inside the name of another room: "quarto de hóspedes"
@@ -91,8 +109,11 @@ def _named_areas(text: str, area_words: Mapping[str, Sequence[str]]) -> set[str]
             phrase = fold(word)
             if not phrase:
                 continue
-            for start, end in _phrase_spans(norm, phrase):
-                matches.append((start, end, end - start, area))
+            pattern = _area_pattern(phrase, connectors)
+            for found in pattern.finditer(norm):
+                matches.append(
+                    (found.start(), found.end(), found.end() - found.start(), area)
+                )
     kept: list[tuple[int, int, int, str]] = []
     for start, end, length, area in sorted(matches, key=lambda item: -item[2]):
         covered = any(
@@ -111,6 +132,7 @@ def word_filter(
     area_words: Mapping[str, Sequence[str]] | None = None,
     entity_words: Mapping[str, Sequence[str]] | None = None,
     default_room: str | None = None,
+    connectors: Sequence[str] = (),
 ) -> list[str] | None:
     """The entities that the words of a command select.
 
@@ -121,6 +143,9 @@ def word_filter(
     command names no room, `default_room` is the room of the satellite. The
     longest room word decides when two areas match, so "quarto de hóspedes" is
     the guest room and not the bedroom.
+
+    `connectors` are the words that may sit between two words of an area name,
+    so "quarto do casal" names the area "Quarto Casal".
 
     `entity_words` holds the words that name one entity, such as "towel warmer".
     Such a word selects that entity by itself, and a room does not narrow it.
@@ -134,7 +159,7 @@ def word_filter(
     if not domains and not named_entities:
         return None
     words = [fold(w) for domain in domains for w in domain_words[domain]]
-    named_rooms = _named_areas(text, area_words) if area_words else set()
+    named_rooms = _named_areas(text, area_words, connectors) if area_words else set()
     defaulted = not named_rooms and bool(default_room)
     rooms = set(named_rooms)
     if defaulted and default_room is not None:

@@ -52,7 +52,18 @@ class WordData:
     areas: dict[str, list[str]] = field(default_factory=dict)
     entities: dict[str, list[str]] = field(default_factory=dict)
     shadow_entities: dict[str, list[str]] = field(default_factory=dict)
+    # The words that may sit between two words of an area name, by language:
+    # "quarto do casal" names the area "Quarto Casal".
+    connectors: dict[str, list[str]] = field(default_factory=dict)
     version: str = ""
+
+    def connector_words(self) -> tuple[str, ...]:
+        """The folded connecting words of every language, with no duplicate."""
+        found: dict[str, None] = {}
+        for words in self.connectors.values():
+            for word in words:
+                found[fold(word)] = None
+        return tuple(found)
 
 
 def _join_words(general: list[str], house: list[str]) -> list[str]:
@@ -142,6 +153,10 @@ def load_word_data(house_path: Path | None) -> WordData:
             entity_id: list(words)
             for entity_id, words in reviewed.get("shadow", {}).items()
         },
+        connectors=_join_map(
+            _join_map(general.get("connectors", {}), generated.get("connectors", {})),
+            reviewed.get("connectors", {}),
+        ),
         version="sha256:" + digest,
     )
 

@@ -116,12 +116,15 @@ class House:
             areas,
             entity_words,
             room,
+            self.words.connector_words(),
         )
         if options is None:
             return FilterResult(None, "none")
         if _named_entities(text, entity_list, entity_words, self.words.domains):
             return FilterResult(options, "entity_word")
-        if room is not None and not _named_areas(text, areas):
+        if room is not None and not _named_areas(
+            text, areas, self.words.connector_words()
+        ):
             return FilterResult(options, "default_room")
         return FilterResult(options, "domain")
 
@@ -150,12 +153,15 @@ class House:
             areas,
             entity_words,
             room,
+            self.words.connector_words(),
         )
         if options is None:
             return FilterResult(None, "none")
         if _named_entities(text, entity_list, entity_words, self.words.domains):
             return FilterResult(options, "entity_word")
-        if room is not None and not _named_areas(text, areas):
+        if room is not None and not _named_areas(
+            text, areas, self.words.connector_words()
+        ):
             return FilterResult(options, "default_room")
         return FilterResult(options, "domain")
 

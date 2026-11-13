@@ -66,5 +66,10 @@
     "pt": ["como", "o que", "qual", "quando", "se", "por que", "explica", "lembra"],
     "en": ["how", "what", "which", "when", "if", "why", "explain", "remind"],
     "es": ["cómo", "qué", "cuál", "cuándo", "si", "por qué", "explica", "recuerda"]
+  },
+  "connectors": {
+    "pt": ["do", "da", "de", "dos", "das"],
+    "es": ["del", "de", "la", "el", "los", "las"],
+    "en": ["of", "the"]
   }
 }
