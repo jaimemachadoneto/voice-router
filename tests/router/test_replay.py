@@ -71,7 +71,7 @@ def test_failures_names_a_non_command_that_acts():
                 entity_ids=["light.a"],
                 reason=None,
                 options=["light.a"],
-                filter_source="domain",
+                filter={"count": 1},
                 jev={
                     "route": {
                         "choice": "device_command",
@@ -97,7 +97,7 @@ def test_failures_names_a_non_command_that_acts():
                 entity_ids=["light.kitchen"],
                 reason=None,
                 options=["light.kitchen"],
-                filter_source="domain",
+                filter={"count": 1},
                 jev={},
             ),
         },
@@ -113,3 +113,26 @@ def test_failures_names_a_non_command_that_acts():
     assert entry["expected"] == "chat"
     assert entry["jev"]["route"]["choice"] == "device_command"
     assert entry["jev"]["action"]["probabilities"] == {"turn_on": 0.8}
+
+
+def test_a_failure_line_holds_the_filter_record_and_no_filter_source():
+    row = {
+        "kind": "route",
+        "id": "en-03",
+        "language": "en",
+        "text": "what is the price of the lamp",
+        "expected": "chat",
+        "decision": SimpleNamespace(
+            route="device_command",
+            act=True,
+            action="turn_on",
+            entity_ids=["light.a"],
+            reason=None,
+            options=["light.a"],
+            filter={"count": 1, "domains": {"light": ["lamp"]}},
+            jev={},
+        ),
+    }
+    entry = json.loads(failures([row]).splitlines()[0])
+    assert entry["filter"] == {"count": 1, "domains": {"light": ["lamp"]}}
+    assert "filter_source" not in entry

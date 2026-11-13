@@ -16,20 +16,22 @@ from voice_router.words import (
     _named_areas,
     _named_entities,
     area_words,
-    word_filter,
+    word_filter_trace,
 )
 
 
 @dataclass(frozen=True)
 class FilterResult:
-    """The entities that a text selects, and the rule that selected them.
+    """The entities that a text selects, and the inputs that selected them.
 
     `source` is one of "none", "domain", "entity_word" or "default_room". The
-    caller uses it to report why the router offered these options.
+    caller uses it for the rule of the decision. `trace` holds every input of
+    the filter, and the decision keeps it in the log (see `word_filter_trace`).
     """
 
     options: list[str] | None
     source: str
+    trace: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -109,7 +111,7 @@ class House:
             for entity in entity_list
             if entity.aliases
         }
-        options = word_filter(
+        options, trace = word_filter_trace(
             text,
             entity_list,
             self.words.domains,
@@ -119,14 +121,14 @@ class House:
             self.words.connector_words(),
         )
         if options is None:
-            return FilterResult(None, "none")
+            return FilterResult(None, "none", trace)
         if _named_entities(text, entity_list, entity_words, self.words.domains):
-            return FilterResult(options, "entity_word")
+            return FilterResult(options, "entity_word", trace)
         if room is not None and not _named_areas(
             text, areas, self.words.connector_words()
         ):
-            return FilterResult(options, "default_room")
-        return FilterResult(options, "domain")
+            return FilterResult(options, "default_room", trace)
+        return FilterResult(options, "domain", trace)
 
     def filter_shadow(self, text: str, room: str | None = None) -> FilterResult:
         """The filter result with the shadow words added to the entity words.
@@ -146,7 +148,7 @@ class House:
             )
             if words:
                 entity_words[entity.entity_id] = words
-        options = word_filter(
+        options, trace = word_filter_trace(
             text,
             entity_list,
             self.words.domains,
@@ -156,14 +158,14 @@ class House:
             self.words.connector_words(),
         )
         if options is None:
-            return FilterResult(None, "none")
+            return FilterResult(None, "none", trace)
         if _named_entities(text, entity_list, entity_words, self.words.domains):
-            return FilterResult(options, "entity_word")
+            return FilterResult(options, "entity_word", trace)
         if room is not None and not _named_areas(
             text, areas, self.words.connector_words()
         ):
-            return FilterResult(options, "default_room")
-        return FilterResult(options, "domain")
+            return FilterResult(options, "default_room", trace)
+        return FilterResult(options, "domain", trace)
 
     def filter_with_word(
         self, text: str, room: str | None, entity_id: str, word: str

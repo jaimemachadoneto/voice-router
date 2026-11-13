@@ -414,3 +414,68 @@ def test_three_connecting_words_do_not_join():
 def test_no_connecting_words_keeps_the_exact_phrase_rule():
     areas = {"Bedroom Main": ["Bedroom Main"]}
     assert _named_areas("liga a luz do bedroom do main", areas) == set()
+
+
+TRACE_AREAS = {"Kitchen": ["Kitchen"], "Closet Suite": ["Closet Suite"]}
+
+
+def traced(text, areas=None, entity_words=None, default_room=None, connectors=()):
+    return words.word_filter_trace(
+        text, filter_house(), WORDS, areas, entity_words, default_room, connectors
+    )
+
+
+def test_filter_trace_names_the_domain_and_the_room():
+    options, trace = traced("liga a luz do kitchen", TRACE_AREAS)
+    assert trace["domains"] == {"light": ["luz"]}
+    assert trace["rooms"] == [{"area": "Kitchen", "said": "kitchen"}]
+    assert trace["near_misses"] == []
+    assert trace["count"] == len(options or ()) == 2
+
+
+def test_filter_trace_says_what_the_room_match_read_with_a_connecting_word():
+    _, trace = traced("liga a luz do closet da suite", TRACE_AREAS, connectors=("da",))
+    assert trace["rooms"] == [{"area": "Closet Suite", "said": "closet da suite"}]
+
+
+def test_filter_trace_gives_the_near_miss_of_a_room():
+    _, trace = traced("liga a luz do suite closet", TRACE_AREAS)
+    assert trace["rooms"] == []
+    assert trace["near_misses"] == [{"area": "Closet Suite", "phrase": "Closet Suite"}]
+
+
+def test_a_room_that_a_longer_room_covers_is_not_a_near_miss():
+    areas = {"Closet": ["Closet"], "Closet Suite": ["Closet Suite"]}
+    _, trace = traced("liga a luz do closet suite", areas)
+    assert trace["rooms"] == [{"area": "Closet Suite", "said": "closet suite"}]
+    assert trace["near_misses"] == []
+
+
+def test_filter_trace_gives_the_word_that_names_an_entity():
+    _, trace = traced(
+        "liga a luz office lamp", entity_words={"switch.office_light": ["office lamp"]}
+    )
+    assert trace["entity_words"] == [
+        {"entity_id": "switch.office_light", "word": "office lamp"}
+    ]
+
+
+def test_filter_trace_marks_the_satellite_room_and_the_fallback():
+    _, used = traced("liga a luz", default_room="Kitchen")
+    assert used["satellite_room"] == "Kitchen"
+    assert used["satellite_room_used"] is True and used["fallback"] is False
+    _, fell = traced("liga a luz", default_room="Garage")
+    assert fell["satellite_room_used"] is False and fell["fallback"] is True
+
+
+def test_filter_trace_of_a_text_with_no_device():
+    options, trace = traced("bom dia", TRACE_AREAS)
+    assert options is None
+    assert trace["count"] is None and trace["domains"] == {}
+    assert trace["rooms"] == [] and trace["entity_words"] == []
+
+
+def test_word_filter_gives_the_options_of_the_trace():
+    text = "liga a luz do kitchen"
+    options, _ = traced(text, TRACE_AREAS)
+    assert words.word_filter(text, filter_house(), WORDS, TRACE_AREAS) == options
