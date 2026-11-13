@@ -1,7 +1,7 @@
 {
   "domain": "voice_router",
   "name": "Voice Router",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "config_flow": true,
   "iot_class": "local_polling",
   "dependencies": ["conversation"],
