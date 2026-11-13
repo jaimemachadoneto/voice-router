@@ -204,6 +204,8 @@ def test_a_recent_row_holds_the_request_the_choices_and_the_agreement():
         "tools": [],
         "jev": "light.office_lamp",
         "kev": "light.office_lamp",
+        "acted": [],
+        "jev_asked": True,
         "agreement": "agree",
         "outcome": "done",
         "seconds": 0.17,
@@ -338,3 +340,45 @@ def test_a_chat_turn_appears_in_the_recent_list():
     assert rows["r1"]["seconds"] == 3.75
     assert rows["r2"]["route"] == "device_command"
     assert result["total"] == 1, "the device count stays the device count"
+
+
+def test_a_row_of_a_one_option_command_names_the_acted_device():
+    records = [
+        _record(
+            "r1",
+            options=["light.office_lamp"],
+            entity_ids=["light.office_lamp"],
+            jev_device=None,
+        )
+    ]
+
+    row = summary(records, names={"light.office_lamp": "Office Lamp"})["recent"][0]
+
+    assert row["acted"] == ["Office Lamp"]
+    assert row["jev_asked"] is False
+    assert row["agreement"] == "agree"
+
+
+def test_a_row_of_a_many_option_command_says_that_jev_was_asked():
+    records = [_record("r1", entity_ids=["light.office_lamp"])]
+
+    row = summary(records)["recent"][0]
+
+    assert row["jev_asked"] is True
+    assert row["acted"] == ["light.office_lamp"]
+
+
+def test_a_row_of_a_command_that_did_not_act_has_no_acted_device():
+    records = [_record("r1", act=False, entity_ids=[])]
+
+    row = summary(records)["recent"][0]
+
+    assert row["acted"] == []
+
+
+def test_a_chat_row_has_no_acted_device_and_no_jev_device_question():
+    records = [_record("r1", route="chat", act=False, has_local=False)]
+
+    row = summary(records)["recent"][0]
+
+    assert row["acted"] == [] and row["jev_asked"] is False
