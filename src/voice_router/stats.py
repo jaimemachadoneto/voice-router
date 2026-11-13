@@ -23,6 +23,12 @@ def _jev_choice(decision: dict) -> str:
     return device.get("choice") or NONE
 
 
+def _jev_was_asked(decision: dict) -> bool:
+    """True when Jev got the device question, also when the call failed."""
+    jev = decision.get("jev") or {}
+    return "device" in jev or "error" in jev
+
+
 def _jev_seconds(decision: dict) -> float:
     """The time of the Jev device answer, for a command with no local answer."""
     jev = decision.get("jev") or {}
@@ -109,9 +115,9 @@ def _recent_row(record: dict, names: Mapping[str, str]) -> dict:
         # The router asks Jev for the device when the words leave two or more
         # options, and for the diagnosis when they leave no set. With one option
         # the acted device comes from the words, so "jev: none" would mislead
-        # next to an agreement.
+        # next to an agreement. A Jev call that failed held the question too.
         "acted": [names.get(i, i) for i in decision.get("entity_ids") or []],
-        "jev_asked": "device" in (decision.get("jev") or {}),
+        "jev_asked": _jev_was_asked(decision),
         # A command with no local answer cannot agree or disagree with it. The
         # row says so instead of claiming a disagreement that never happened.
         "agreement": _agreement(decision, jev=jev, kev=kev)
