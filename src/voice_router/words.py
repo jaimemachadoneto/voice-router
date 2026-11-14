@@ -42,8 +42,10 @@ def entity_text(
         extra = (area_aliases or {}).get(entity.area, ())
         if extra:
             text += ", " + ", ".join(extra)
-    if entity.aliases:
-        text += ", " + ", ".join(entity.aliases)
+    # Home Assistant gives the name as an alias too, and the model then reads it twice.
+    aliases = [a for a in entity.aliases if a != entity.name]
+    if aliases:
+        text += ", " + ", ".join(aliases)
     return text
 
 
