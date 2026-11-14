@@ -23,6 +23,11 @@ def test_aliases_add_words_to_the_text_of_an_entity():
     assert "kitchen" in text and "cookroom" in text and "kitchen ceiling light" in text
 
 
+def test_an_alias_that_is_the_name_does_not_repeat_it():
+    e = Entity("light.a", "Ceiling Light", "Kitchen", aliases=("Ceiling Light",))
+    assert words.entity_text(e) == "Ceiling Light. Kitchen"
+
+
 def test_an_entity_with_no_area_has_only_the_name():
     assert words.entity_text(Entity("light.g", "Closet Group", None)) == "Closet Group"
 
