@@ -102,6 +102,8 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         self._client = client
         self._attr_unique_id = f"voice_router_{entry.entry_id}"
         self.pending: dict[str, Pending] = {}
+        # Conversations whose last model answer kept the microphone open.
+        self._reopened: set[str] = set()
         self._last: dict[str, LastCommand] = {}
 
     @property
@@ -129,14 +131,28 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         """Make the result with one spoken sentence."""
         response = intent.IntentResponse(language=language)
         response.async_set_speech(speech)
-        # The model answers a question with no wake word needed: the user
-        # replies at once, and the satellite must listen again.
-        continue_conversation = continue_conversation or speech.rstrip().endswith("?")
         return ConversationResult(
             response=response,
             conversation_id=conversation_id,
             continue_conversation=continue_conversation,
         )
+
+    def _model_reply(
+        self, language: str, conversation_id: str, speech: str
+    ) -> ConversationResult:
+        """Make the result of a model answer.
+
+        The model text decides if the microphone opens again, so the rule is
+        narrow: only a question, and only one turn with no wake word.
+        """
+        listen = (
+            speech.rstrip().endswith("?") and conversation_id not in self._reopened
+        )
+        if listen:
+            self._reopened.add(conversation_id)
+        else:
+            self._reopened.discard(conversation_id)
+        return self._reply(language, conversation_id, speech, listen)
 
     def _async_log(self, record_id: str, result: dict[str, Any]) -> None:
         """Send the result of the record to the router and do not wait."""
@@ -307,7 +323,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
                     self._async_log(record_id, {"status": "builtin"})
                     return await self._async_builtin(user_input)
                 self._async_log(record_id, result)
-                return self._reply(language, conversation_id, reply)
+                return self._model_reply(language, conversation_id, reply)
             self._async_log(record_id, {"status": "builtin"})
             return await self._async_builtin(user_input)
 
@@ -329,4 +345,4 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
             reply = phrase("no_internet", language)
             result = {"error": "model_unavailable"}
         self._async_log(record_id, result)
-        return self._reply(language, conversation_id, reply)
+        return self._model_reply(language, conversation_id, reply)
