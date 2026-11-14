@@ -762,3 +762,43 @@ async def test_the_second_command_acts_after_a_repeat(
         "record_id": "rec1",
         "result": {"repeat": True},
     } in _log_bodies(aioclient_mock)
+
+
+@pytest.mark.parametrize(
+    ("reply", "listens"),
+    [("Qual luz? A da sala ou a do quarto?", True), ("São vinte horas.", False)],
+)
+async def test_a_chat_answer_that_asks_a_question_keeps_the_session_open(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    aioclient_mock,
+    reply: str,
+    listens: bool,
+) -> None:
+    """The satellite listens again after a question, so no wake word is needed."""
+    await _setup(hass, entry, aioclient_mock, _decision(route="chat", act=False))
+    model = AsyncMock(return_value=(reply, {}))
+    with patch(CONVERSATION_MODULE + ".run_model", model):
+        result = await _ask(hass, "Acende a luz")
+
+    assert result.continue_conversation is listens
+
+
+async def test_a_second_question_in_a_row_closes_the_session(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """The model cannot keep the microphone open for more than one turn."""
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(route="chat", act=False),
+        _decision(route="chat", act=False, record_id="record-2"),
+    )
+    model = AsyncMock(return_value=("Qual luz?", {}))
+    with patch(CONVERSATION_MODULE + ".run_model", model):
+        first = await _ask(hass, "Acende a luz")
+        second = await _ask(hass, "A luz")
+
+    assert first.continue_conversation is True
+    assert second.continue_conversation is False
