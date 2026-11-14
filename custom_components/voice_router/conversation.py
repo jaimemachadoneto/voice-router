@@ -129,6 +129,9 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         """Make the result with one spoken sentence."""
         response = intent.IntentResponse(language=language)
         response.async_set_speech(speech)
+        # The model answers a question with no wake word needed: the user
+        # replies at once, and the satellite must listen again.
+        continue_conversation = continue_conversation or speech.rstrip().endswith("?")
         return ConversationResult(
             response=response,
             conversation_id=conversation_id,
