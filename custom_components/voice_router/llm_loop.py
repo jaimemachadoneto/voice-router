@@ -34,6 +34,7 @@ from .const import (
     DEFAULT_LLM_HASS_API,
     DOMAIN,
 )
+from .weather import FORECAST_API_ID, async_ensure_api
 
 MAX_TOOL_ITERATIONS = 10
 MODEL_TIMEOUT = 30.0
@@ -238,10 +239,15 @@ async def run_model(
         CONF_CHAT_MODEL if is_chat else CONF_COMPLEX_MODEL,
         DEFAULT_CHAT_MODEL if is_chat else DEFAULT_COMPLEX_MODEL,
     )
-    # The chat route has no tools, so the model can only speak.
-    llm_api: str | list[str] | None = None
+    # The chat route gets only the read-only forecast tool, so it cannot act on
+    # a device. The complex route gets the forecast beside the Assist tools.
+    async_ensure_api(hass)
+    llm_api: list[str] = [FORECAST_API_ID]
     if not is_chat:
-        llm_api = entry.options.get(CONF_LLM_HASS_API, DEFAULT_LLM_HASS_API)
+        configured = entry.options.get(CONF_LLM_HASS_API, DEFAULT_LLM_HASS_API)
+        if isinstance(configured, str):
+            configured = [configured]
+        llm_api = [*configured, FORECAST_API_ID]
     prompt = WORLD_RULE + " " + DEVICE_RULE
     if is_chat:
         prompt = CHAT_PROMPT.format(
@@ -335,12 +341,31 @@ async def run_model(
         if isinstance(content, conversation.AssistantContent)
         for tool_call in content.tool_calls or []
     ]
+    # The log keeps the whole turn, so a wrong answer can be read back later:
+    # each tool call with its arguments and the result that the model got.
+    results = {
+        content.tool_call_id: content.tool_result
+        for content in new_content
+        if isinstance(content, conversation.ToolResultContent)
+    }
+    tool_calls = [
+        {
+            "name": tool_call.tool_name,
+            "args": tool_call.tool_args,
+            "result": results.get(tool_call.id),
+        }
+        for content in new_content
+        if isinstance(content, conversation.AssistantContent)
+        for tool_call in content.tool_calls or []
+    ]
     input_tokens = usage_holder.get("input_tokens", 0)
     output_tokens = usage_holder.get("output_tokens", 0)
     first_text = usage_holder.get("first_text")
     result = {
         "model": model,
         "tools": tool_names,
+        "reply": reply,
+        "tool_calls": tool_calls,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "seconds_to_first_text": (first_text - start) if first_text else 0.0,

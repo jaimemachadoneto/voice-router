@@ -13,11 +13,12 @@ import pytest
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationInput
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import Context, HomeAssistant, SupportsResponse
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
+from homeassistant.util.json import JsonValueType
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import (
@@ -53,6 +54,7 @@ from custom_components.voice_router.llm_loop import (
     ModelUnavailable,
     run_model,
 )
+from custom_components.voice_router.weather import FORECAST_API_SLUG, FORECAST_TOOL_NAME
 
 ROUTER = "http://router"
 ROUTE_URL = f"{ROUTER}/route"
@@ -316,10 +318,10 @@ async def _ask(hass: HomeAssistant, text: str) -> conversation.ConversationResul
     return result
 
 
-async def test_chat_sends_only_the_web_search_tool(
+async def test_chat_sends_only_the_read_only_tools(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:
-    """A chat request sends the web search tool and no Assist API tool.
+    """A chat request sends the web search and the forecast tools, and no Assist tool.
 
     The chat route must reach the world, because "will it rain today" is a chat
     question. It must not reach a device: the Assist API tools act on the house.
@@ -332,7 +334,7 @@ async def test_chat_sends_only_the_web_search_tool(
         await _ask(hass, "Vai chover em Fortaleza?")
 
     names = [tool["function"]["name"] for tool in client.calls[0]["tools"]]
-    assert names == [WEB_SEARCH_TOOL_NAME]
+    assert names == [WEB_SEARCH_TOOL_NAME, FORECAST_TOOL_NAME]
     assert client.calls[0]["model"] == CHAT_MODEL
     assert client.init_kwargs == {
         "base_url": "http://llm",
@@ -359,6 +361,8 @@ async def test_complex_sends_the_web_search_tool_and_the_tools_of_the_assist_api
 
     names = [tool["function"]["name"] for tool in client.calls[0]["tools"]]
     assert WEB_SEARCH_TOOL_NAME in names
+    # A merged API puts its name before the name of each of its tools.
+    assert any(name.endswith(FORECAST_TOOL_NAME) for name in names)
     assert any(name.endswith("HassTurnOn") for name in names)
     assert client.calls[0]["model"] == COMPLEX_MODEL
 
@@ -372,7 +376,12 @@ async def test_a_tool_call_runs_and_the_loop_continues(
     """A tool call runs in Home Assistant and the model then gives the reply."""
     calls = async_mock_service(hass, "light", "turn_on")
     client = FakeClient()
-    client.answers = [_tool_answer(), _text_answer("The light is on")]
+    # The complex route merges Assist with the forecast API, so the merged API
+    # puts "assist__" before each Assist tool.
+    client.answers = [
+        _tool_answer("assist__intent__HassTurnOn"),
+        _text_answer("The light is on"),
+    ]
     await _setup(hass, entry, aioclient_mock, "complex")
 
     with (
@@ -389,13 +398,23 @@ async def test_a_tool_call_runs_and_the_loop_continues(
     assert set(logged) == {
         "model",
         "tools",
+        "reply",
+        "tool_calls",
         "input_tokens",
         "output_tokens",
         "seconds_to_first_text",
         "seconds",
     }
     assert logged["model"] == COMPLEX_MODEL
-    assert logged["tools"] == ["intent__HassTurnOn"]
+    assert logged["tools"] == ["assist__intent__HassTurnOn"]
+    # The log holds the whole turn: the reply, each tool call and its result.
+    assert logged["reply"] == "The light is on"
+    assert logged["tool_calls"][0]["name"] == "assist__intent__HassTurnOn"
+    assert logged["tool_calls"][0]["args"] == {
+        "name": "Kitchen light",
+        "domain": ["light"],
+    }
+    assert logged["tool_calls"][0]["result"]
     assert logged["input_tokens"] == 16
     assert logged["output_tokens"] == 9
     assert 0 < logged["seconds_to_first_text"] <= logged["seconds"]
@@ -751,3 +770,52 @@ async def test_the_prompt_tells_the_model_to_name_the_kind_of_device(
 
     sent = json.dumps(client.calls[0]["messages"], ensure_ascii=False)
     assert "give the domain of that device to the tool" in sent
+
+
+FORECAST: JsonValueType = {
+    "forecast": [
+        {
+            "datetime": "2026-11-21T15:00:00+00:00",
+            "condition": "rainy",
+            "precipitation_probability": 80,
+        }
+    ]
+}
+
+
+@pytest.mark.parametrize("route", ["chat", "complex"])
+async def test_the_forecast_tool_gives_the_forecast_of_the_exposed_weather(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock, route: str
+) -> None:
+    """ "Vai chover hoje?" needs a forecast, and the state of the weather has none."""
+    hass.states.async_set("weather.home", "cloudy")
+    hass.states.async_set("weather.other", "sunny")
+    _should_expose(hass, "weather.home")
+    forecasts = async_mock_service(
+        hass,
+        "weather",
+        "get_forecasts",
+        response={"weather.home": FORECAST},
+        supports_response=SupportsResponse.ONLY,
+    )
+    name = (
+        FORECAST_TOOL_NAME
+        if route == "chat"
+        else f"{FORECAST_API_SLUG}__{FORECAST_TOOL_NAME}"
+    )
+    client = FakeClient()
+    client.answers = [
+        _tool_answer(name, '{"kind": "hourly"}'),
+        _text_answer("Sim, às 15 horas."),
+    ]
+    await _setup(hass, entry, aioclient_mock, route)
+
+    with _patch_client(client):
+        result = await _ask(hass, "Vai chover hoje?")
+
+    assert _speech(result) == "Sim, às 15 horas."
+    assert forecasts[0].data["entity_id"] == ["weather.home"]
+    assert forecasts[0].data["type"] == "hourly"
+    tool_message = client.calls[1]["messages"][-1]
+    assert tool_message["role"] == "tool"
+    assert "rainy" in tool_message["content"]
