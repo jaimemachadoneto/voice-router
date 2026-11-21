@@ -656,8 +656,9 @@ async def test_a_web_search_call_that_the_gateway_does_not_run_degrades(
     assert _speech(result) == NO_INTERNET_PT
 
 
-async def test_the_chat_prompt_bounds_the_length_of_the_answer(
-    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+@pytest.mark.parametrize("route", ["chat", "complex"])
+async def test_the_prompt_bounds_the_length_of_the_answer(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock, route: str
 ) -> None:
     """A spoken answer must be short.
 
@@ -667,7 +668,7 @@ async def test_the_chat_prompt_bounds_the_length_of_the_answer(
     """
     client = FakeClient()
     client.answers = [_text_answer()]
-    await _setup(hass, entry, aioclient_mock, "chat")
+    await _setup(hass, entry, aioclient_mock, route)
 
     with _patch_client(client):
         await _ask(hass, "Vai chover em Fortaleza?")
@@ -675,6 +676,10 @@ async def test_the_chat_prompt_bounds_the_length_of_the_answer(
     system = client.calls[0]["messages"][0]["content"]
     assert "at most two sentences" in system
     assert "Do not use a list" in system
+    assert "Markdown" in system
+    # The product speaks Brazilian Portuguese, and a model often answers in
+    # the European form ("guarda-chuva à mão", "não percebi").
+    assert "Brazilian Portuguese" in system
 
 
 async def test_the_prompt_says_the_house_is_not_the_world(
@@ -819,3 +824,34 @@ async def test_the_forecast_tool_gives_the_forecast_of_the_exposed_weather(
     tool_message = client.calls[1]["messages"][-1]
     assert tool_message["role"] == "tool"
     assert "rainy" in tool_message["content"]
+
+
+async def test_the_spoken_reply_has_no_markdown(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A text to speech engine reads "**" and "#" aloud as noise.
+
+    A complex answer about the weather came back with headings, bold text and
+    bullets, and the satellite read the marks.
+    """
+    client = FakeClient()
+    client.answers = [
+        _text_answer(
+            "## Hoje\n\n- Chuva fraca entre as **15h e as 17h**.\n"
+            "* Depois, só *nublado*\n1. Leve o `guarda-chuva`."
+        )
+    ]
+    await _setup(hass, entry, aioclient_mock, "complex")
+
+    with (
+        _patch_client(client),
+        patch.object(VoiceRouterAgent, "_async_log") as log,
+    ):
+        result = await _ask(hass, "Vai chover hoje?")
+
+    expected = (
+        "Hoje. Chuva fraca entre as 15h e as 17h. Depois, só nublado. "
+        "Leve o guarda-chuva."
+    )
+    assert _speech(result) == expected
+    assert log.call_args.args[1]["reply"] == expected

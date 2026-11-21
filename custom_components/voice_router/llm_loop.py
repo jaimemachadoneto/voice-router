@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any, cast
@@ -89,17 +90,50 @@ WORLD_RULE = (
     "the web search tool. If you cannot search, say that you do not know."
 )
 
-CHAT_PROMPT = (
+# A person hears the answer, so both routes get the same rules. The complex
+# route once answered a weather question with headings, bold text, bullets and
+# five days, and the satellite read each mark aloud.
+VOICE_RULE = (
     "You are a voice assistant, and a person hears the answer spoken. "
-    "Answer the request in the language "
-    '"{language}". '
-    "The current date and time is {now}. "
+    'Answer the request in the language "{language}".{variant} '
     # A weather question once got eight sentences, a list and a 15-day
     # forecast. A person listens to the answer, so it must stay short.
     "Answer with at most two sentences and 40 words. "
-    "Do not use a list, a bullet, a heading or a table. "
-    "If the sources disagree, say it in one short clause. Then stop. " + WORLD_RULE
+    "Do not use a list, a bullet, a heading, a table, bold text or any other "
+    "Markdown: write plain sentences only. "
+    "If the sources disagree, say it in one short clause. Then stop. "
 )
+
+# The product speaks Brazilian Portuguese, and a model often answers in the
+# European form.
+VARIANTS = {"pt": " Use Brazilian Portuguese."}
+
+CHAT_PROMPT = VOICE_RULE + "The current date and time is {now}. " + WORLD_RULE
+
+
+# A list marker or a heading mark at the start of a line: "- ", "* ", "1. ", "## ".
+_LINE_MARK = re.compile(r"^\s*(?:[-*+•]\s+|\d+[.)]\s+|#{1,6}\s*|>\s*)")
+# Bold, italic and code marks, and a table bar.
+_INLINE_MARK = re.compile(r"\*{1,3}|_{2,3}|`+|\|")
+
+
+def spoken(text: str) -> str:
+    """Remove the Markdown marks, so the voice does not read them aloud.
+
+    The prompt asks for plain sentences, but a model does not always obey, and
+    the text to speech engine reads each mark. A line without an end mark gets
+    a full stop before the next line, so a heading and a list item stay
+    separate sentences.
+    """
+    lines = [
+        _INLINE_MARK.sub("", _LINE_MARK.sub("", line)).strip()
+        for line in text.splitlines()
+    ]
+    lines = [line for line in lines if line]
+    return " ".join(
+        line if index == len(lines) - 1 or line[-1] in ".!?:;," else line + "."
+        for index, line in enumerate(lines)
+    )
 
 
 class ModelUnavailable(Exception):
@@ -248,11 +282,17 @@ async def run_model(
         if isinstance(configured, str):
             configured = [configured]
         llm_api = [*configured, FORECAST_API_ID]
-    prompt = WORLD_RULE + " " + DEVICE_RULE
+    language = (user_input.language or "en")[:2]
+    variant = VARIANTS.get(language, "")
+    prompt = (
+        VOICE_RULE.format(language=language, variant=variant)
+        + WORLD_RULE
+        + " "
+        + DEVICE_RULE
+    )
     if is_chat:
         prompt = CHAT_PROMPT.format(
-            language=(user_input.language or "en")[:2],
-            now=dt_util.now().isoformat(),
+            language=language, variant=variant, now=dt_util.now().isoformat()
         )
 
     await chat_log.async_provide_llm_data(
@@ -332,7 +372,7 @@ async def run_model(
             isinstance(content, conversation.AssistantContent)
             and content.content is not None
         ):
-            reply = content.content
+            reply = spoken(content.content)
             break
 
     tool_names = [
