@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -42,6 +43,8 @@ DEVICE_COMMAND = "device_command"
 OFFLINE = "offline"
 CONFIRM_SECONDS = 30
 REPEAT_SECONDS = 20
+# A question mark with only spaces, quote marks or emoji after it.
+QUESTION_END = re.compile(r"\?[^\w.!?]*$")
 LANGUAGES = ["pt", "en", "es"]
 
 
@@ -62,6 +65,7 @@ class LastCommand:
     record_id: str
     at: datetime
     acted: bool
+    entity_ids: frozenset[str] = frozenset()
 
 
 def _room_name(hass: HomeAssistant, device_id: str | None) -> str | None:
@@ -103,7 +107,6 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         self._attr_unique_id = f"voice_router_{entry.entry_id}"
         self.pending: dict[str, Pending] = {}
         # Conversations whose last model answer kept the microphone open.
-        self._reopened: set[str] = set()
         self._last: dict[str, LastCommand] = {}
 
     @property
@@ -142,16 +145,11 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
     ) -> ConversationResult:
         """Make the result of a model answer.
 
-        The model text decides if the microphone opens again, so the rule is
-        narrow: only a question, and only one turn with no wake word.
+        The microphone opens again when the reply ends with a question, also
+        when an emoji or a quote mark follows the question mark. A dialog goes
+        on for as long as the assistant asks: the user chose no turn limit.
         """
-        listen = (
-            speech.rstrip().endswith("?") and conversation_id not in self._reopened
-        )
-        if listen:
-            self._reopened.add(conversation_id)
-        else:
-            self._reopened.discard(conversation_id)
+        listen = QUESTION_END.search(speech) is not None
         return self._reply(language, conversation_id, speech, listen)
 
     def _async_log(self, record_id: str, result: dict[str, Any]) -> None:
@@ -221,7 +219,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
                 except UnknownEntity, NotSupported:
                     self._async_log(pending.record_id, {"status": "builtin"})
                     return await self._async_builtin(user_input)
-                self._async_log(pending.record_id, {"status": "done"})
+                self._async_log(pending.record_id, {"status": "done", "reply": speech})
                 return self._reply(language, conversation_id, speech)
             if answer is False:
                 del self.pending[conversation_id]
@@ -250,6 +248,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
         # current request. Only a device command or an offline answer counts: a
         # chat question after an action is not a correction of it.
         last = self._last.get(conversation_id)
+        entity_ids = frozenset(decision.get("entity_ids") or [])
         if (
             route in (DEVICE_COMMAND, OFFLINE)
             and last is not None
@@ -260,12 +259,19 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
             normalized = text.strip().lower()
             if normalized == last.text:
                 self._async_log(last.record_id, {"repeat": True})
-            else:
+            elif entity_ids and entity_ids != last.entity_ids:
+                # Only another device says that the last device was wrong. A
+                # new action on the same device ("on", then "off") or a command
+                # with no device says nothing about it.
                 self._async_log(last.record_id, {"correction": True})
 
         if record_id:
             self._last[conversation_id] = LastCommand(
-                text.strip().lower(), record_id, utcnow(), bool(decision.get("act"))
+                text.strip().lower(),
+                record_id,
+                utcnow(),
+                bool(decision.get("act")),
+                entity_ids,
             )
 
         if route == DEVICE_COMMAND and decision.get("act"):
@@ -294,7 +300,7 @@ class VoiceRouterAgent(ConversationEntity, AbstractConversationAgent):
             except UnknownEntity, NotSupported:
                 self._async_log(record_id, {"status": "builtin"})
                 return await self._async_builtin(user_input)
-            self._async_log(record_id, {"status": "done"})
+            self._async_log(record_id, {"status": "done", "reply": speech})
             return self._reply(language, conversation_id, speech)
 
         if route == DEVICE_COMMAND:

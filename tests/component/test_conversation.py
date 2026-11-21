@@ -616,6 +616,9 @@ async def test_each_request_sends_a_log(
     log_calls = _calls_to(aioclient_mock, LOG_URL)
     assert len(log_calls) == 1
     assert log_calls[0][2]["record_id"] == "record-42"
+    # The log holds what the person heard, so a wrong reply can be read back.
+    assert log_calls[0][2]["result"]["status"] == "done"
+    assert log_calls[0][2]["result"]["reply"]
 
 
 def _log_bodies(aioclient_mock) -> list[dict[str, Any]]:
@@ -649,7 +652,7 @@ async def test_a_repeated_command_marks_the_previous_record(
 async def test_a_corrected_command_marks_the_previous_record(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:
-    """A different command within 20 s marks the previous record as a correction."""
+    """A command on another device within 20 s marks the previous record as a correction."""
     async_mock_service(hass, "fan", "turn_off")
     async_mock_service(hass, "light", "turn_off")
     hass.states.async_set("fan.office", "on")
@@ -669,6 +672,49 @@ async def test_a_corrected_command_marks_the_previous_record(
         "record_id": "rec1",
         "result": {"correction": True},
     } in _log_bodies(aioclient_mock)
+
+
+async def test_a_new_action_on_the_same_device_is_not_a_correction(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """On then off on the same fan: the device was right, so nothing is marked."""
+    async_mock_service(hass, "fan", "turn_on")
+    async_mock_service(hass, "fan", "turn_off")
+    hass.states.async_set("fan.office", "off")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(action="turn_on", entity_ids=["fan.office"], record_id="rec1"),
+        _decision(action="turn_off", entity_ids=["fan.office"], record_id="rec2"),
+    )
+
+    await _ask(hass, "turn on the fan")
+    await _ask(hass, "turn off the fan")
+
+    for body in _log_bodies(aioclient_mock):
+        assert "correction" not in body["result"]
+
+
+async def test_a_command_that_names_no_device_is_not_a_correction(
+    hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
+) -> None:
+    """A next command with no device says nothing about the device of the last."""
+    async_mock_service(hass, "fan", "turn_off")
+    hass.states.async_set("fan.office", "on")
+    await _setup(
+        hass,
+        entry,
+        aioclient_mock,
+        _decision(entity_ids=["fan.office"], record_id="rec1"),
+        _decision(act=False, entity_ids=[], record_id="rec2"),
+    )
+
+    await _ask(hass, "turn off the fan")
+    await _ask(hass, "hmm the fan")
+
+    for body in _log_bodies(aioclient_mock):
+        assert "correction" not in body["result"]
 
 
 async def test_a_command_after_20_seconds_marks_nothing(
@@ -766,7 +812,14 @@ async def test_the_second_command_acts_after_a_repeat(
 
 @pytest.mark.parametrize(
     ("reply", "listens"),
-    [("Qual luz? A da sala ou a do quarto?", True), ("São vinte horas.", False)],
+    [
+        ("Qual luz? A da sala ou a do quarto?", True),
+        ("São vinte horas.", False),
+        # A model often ends a question with an emoji or a quote mark.
+        ("Quer saber mais alguma coisa? 😊", True),
+        ('Você quis dizer "a luz da sala?"', True),
+        ("Choveu? Não, fez sol.", False),
+    ],
 )
 async def test_a_chat_answer_that_asks_a_question_keeps_the_session_open(
     hass: HomeAssistant,
@@ -784,21 +837,20 @@ async def test_a_chat_answer_that_asks_a_question_keeps_the_session_open(
     assert result.continue_conversation is listens
 
 
-async def test_a_second_question_in_a_row_closes_the_session(
+async def test_each_question_in_a_row_keeps_the_session_open(
     hass: HomeAssistant, entry: MockConfigEntry, aioclient_mock
 ) -> None:
-    """The model cannot keep the microphone open for more than one turn."""
+    """A dialog goes on for as long as the assistant asks a question."""
     await _setup(
         hass,
         entry,
         aioclient_mock,
         _decision(route="chat", act=False),
         _decision(route="chat", act=False, record_id="record-2"),
+        _decision(route="chat", act=False, record_id="record-3"),
     )
     model = AsyncMock(return_value=("Qual luz?", {}))
     with patch(CONVERSATION_MODULE + ".run_model", model):
-        first = await _ask(hass, "Acende a luz")
-        second = await _ask(hass, "A luz")
+        results = [await _ask(hass, text) for text in ("Acende", "A luz", "Essa")]
 
-    assert first.continue_conversation is True
-    assert second.continue_conversation is False
+    assert [result.continue_conversation for result in results] == [True] * 3
