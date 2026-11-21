@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from voice_router import notifications, proposals
@@ -468,6 +468,45 @@ def create_app(
             else {}
         )
         return stats_summary(store.all_records(), names)
+
+    @app.get("/records")
+    def list_records(
+        since: str | None = None,
+        route: str | None = None,
+        flag: Literal["correction", "repeat"] | None = None,
+        limit: int = Query(50, ge=1, le=500),
+        _: None = Depends(check_token),
+    ) -> dict[str, Any]:
+        """Return the records of the log, the newest first, for a review.
+
+        The `/stats` summary shows only the recent rows. A review of the
+        wrong actions needs each record that a repeat or a correction marked.
+        `since` is a string that the route parses, because the tests replace
+        the module `datetime` with a frozen clock that FastAPI cannot read.
+        """
+        start = None
+        if since is not None:
+            try:
+                start = datetime.fromisoformat(since)
+            except ValueError as err:
+                raise HTTPException(status_code=422, detail="since is not ISO") from err
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=UTC)
+        found = []
+        # shortcut: filters the whole log in memory, like /stats; move the filter to SQL when the log is large.
+        for record in reversed(store.all_records()):
+            decision = record.get("decision") or {}
+            result = record.get("result") or {}
+            if start is not None and datetime.fromisoformat(record["at"]) < start:
+                continue
+            if route is not None and decision.get("route") != route:
+                continue
+            if flag is not None and not result.get(flag):
+                continue
+            found.append(record)
+            if len(found) == limit:
+                break
+        return {"records": found}
 
     @app.get("/records/{record_id}")
     def get_record(record_id: str, _: None = Depends(check_token)) -> dict[str, Any]:

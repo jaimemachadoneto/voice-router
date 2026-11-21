@@ -595,6 +595,68 @@ def test_an_unknown_record_is_404(settings: Settings):
     assert response.status_code == 404
 
 
+def _add(store: Store, route: str, result: dict | None = None) -> str:
+    record_id = store.add_record(
+        {"request": {"text": route}, "decision": {"route": route}}
+    )
+    if result is not None:
+        store.set_result(record_id, result)
+    return record_id
+
+
+def test_the_record_list_needs_the_token(settings: Settings):
+    client = make_client(settings)
+    assert client.get("/records").status_code == 401
+
+
+def test_the_record_list_gives_the_newest_record_first(settings: Settings):
+    store = Store(settings.db)
+    first = _add(store, "chat")
+    second = _add(store, "device_command")
+    client = make_client(settings, store)
+
+    body = client.get("/records", headers=HEADERS).json()
+
+    assert [record["id"] for record in body["records"]] == [second, first]
+
+
+def test_the_record_list_filters_on_route_flag_and_limit(settings: Settings):
+    store = Store(settings.db)
+    _add(store, "chat")
+    corrected = _add(store, "device_command", {"status": "done", "correction": True})
+    repeated = _add(store, "device_command", {"status": "done", "repeat": True})
+    _add(store, "device_command", {"status": "done"})
+    client = make_client(settings, store)
+
+    def ids(query: str) -> list[str]:
+        response = client.get(f"/records?{query}", headers=HEADERS)
+        return [record["id"] for record in response.json()["records"]]
+
+    assert len(ids("route=device_command")) == 3
+    assert ids("flag=correction") == [corrected]
+    assert ids("flag=repeat") == [repeated]
+    assert len(ids("limit=2")) == 2
+
+
+def test_the_record_list_keeps_only_the_records_since_a_time(settings: Settings):
+    store = Store(settings.db)
+    _add(store, "chat")
+    client = make_client(settings, store)
+
+    assert client.get("/records?since=2000-01-01", headers=HEADERS).json()["records"]
+    assert not client.get("/records?since=2999-01-01", headers=HEADERS).json()[
+        "records"
+    ]
+
+
+@pytest.mark.parametrize(
+    "query", ["limit=0", "limit=501", "flag=other", "since=yesterday"]
+)
+def test_the_record_list_refuses_a_bad_filter(settings: Settings, query: str):
+    client = make_client(settings)
+    assert client.get(f"/records?{query}", headers=HEADERS).status_code == 422
+
+
 def test_the_settings_need_a_token(clean_env: pytest.MonkeyPatch):
     clean_env.setenv("OPENROUTER_API_KEY", "test-key")
     with pytest.raises(RuntimeError):

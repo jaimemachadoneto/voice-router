@@ -310,6 +310,7 @@ sequenceDiagram
 | `POST /route` | Decide a command | Full decision + `record_id` |
 | `POST /log` | Log action result | `204 No Content` |
 | `GET /stats` | Dashboard summary | Aggregated stats |
+| `GET /records` | List the records, newest first (`since`, `route`, `flag`, `limit`) | `{"records": [...]}` |
 | `GET /records/{id}` | Get one record | Record + named entities |
 | `GET /health` | Health check | `{"status": "ok", "synced": ...}` |
 | `GET /notifications` | Pending notifications | `{"items": [...]}` |
