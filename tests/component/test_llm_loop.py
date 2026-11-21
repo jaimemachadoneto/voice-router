@@ -53,6 +53,7 @@ from custom_components.voice_router.llm_loop import (
     WEB_SEARCH_TOOL_NAME,
     ModelUnavailable,
     run_model,
+    spoken,
 )
 from custom_components.voice_router.weather import FORECAST_API_SLUG, FORECAST_TOOL_NAME
 
@@ -680,6 +681,10 @@ async def test_the_prompt_bounds_the_length_of_the_answer(
     # The product speaks Brazilian Portuguese, and a model often answers in
     # the European form ("guarda-chuva à mão", "não percebi").
     assert "Brazilian Portuguese" in system
+    # Two weather entities gave two forecasts, and the voice said "as fontes
+    # divergem", which does not help a person who asked a yes or no question.
+    assert "disagree, say it" not in system
+    assert "Do not mention the sources" in system
 
 
 async def test_the_prompt_says_the_house_is_not_the_world(
@@ -850,8 +855,25 @@ async def test_the_spoken_reply_has_no_markdown(
         result = await _ask(hass, "Vai chover hoje?")
 
     expected = (
-        "Hoje. Chuva fraca entre as 15h e as 17h. Depois, só nublado. "
+        "Hoje. Chuva fraca entre as 15 horas e as 17 horas. Depois, só nublado. "
         "Leve o guarda-chuva."
     )
     assert _speech(result) == expected
     assert log.call_args.args[1]["reply"] == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "language", "expected"),
+    [
+        ("Chuva às 15h.", "pt", "Chuva às 15 horas."),
+        ("Entre as 15h e as 17h30.", "pt", "Entre as 15 horas e as 17 horas e 30."),
+        ("Sol à 1h.", "pt", "Sol à 1 hora."),
+        ("A las 9h.", "es", "A las 9 horas."),
+        # Only a number and "h" form a time: a word that ends in "h" stays.
+        ("Ah, 15 km/h.", "pt", "Ah, 15 km/h."),
+        ("Rain at 15h.", "en", "Rain at 15h."),
+    ],
+)
+def test_a_time_is_spoken_as_hours(text: str, language: str, expected: str) -> None:
+    """The voice read "15h" as "fifteen agá", so the reply says "15 horas"."""
+    assert spoken(text, language) == expected

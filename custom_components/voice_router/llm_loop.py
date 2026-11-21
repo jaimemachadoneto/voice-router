@@ -101,7 +101,10 @@ VOICE_RULE = (
     "Answer with at most two sentences and 40 words. "
     "Do not use a list, a bullet, a heading, a table, bold text or any other "
     "Markdown: write plain sentences only. "
-    "If the sources disagree, say it in one short clause. Then stop. "
+    # Two weather entities once gave two forecasts, and the voice said "the
+    # sources disagree", which does not answer a yes or no question.
+    "Give one answer. If the data disagree, give the most likely answer. "
+    "Do not mention the sources of the data. Then stop. "
 )
 
 # The product speaks Brazilian Portuguese, and a model often answers in the
@@ -117,11 +120,25 @@ _LINE_MARK = re.compile(r"^\s*(?:[-*+•]\s+|\d+[.)]\s+|#{1,6}\s*|>\s*)")
 _INLINE_MARK = re.compile(r"\*{1,3}|_{2,3}|`+|\|")
 
 
-def spoken(text: str) -> str:
+# A time as "15h" or "17h30". The voice read the "h" as a letter.
+_HOURS = re.compile(r"\b(\d{1,2})h(\d{2})?\b")
+# The languages that write a time as "15h" and say "horas".
+_HOUR_LANGUAGES = {"pt", "es"}
+
+
+def _hours(match: re.Match[str]) -> str:
+    """Say "15h30" as "15 horas e 30", and "1h" as "1 hora"."""
+    hour, minutes = match.group(1), match.group(2)
+    words = f"{hour} {'hora' if hour in ('1', '01') else 'horas'}"
+    return f"{words} e {minutes}" if minutes and minutes != "00" else words
+
+
+def spoken(text: str, language: str = "en") -> str:
     """Remove the Markdown marks, so the voice does not read them aloud.
 
     The prompt asks for plain sentences, but a model does not always obey, and
-    the text to speech engine reads each mark. A line without an end mark gets
+    the text to speech engine reads each mark. A time such as "15h" becomes
+    "15 horas" in Portuguese and Spanish. A line without an end mark gets
     a full stop before the next line, so a heading and a list item stay
     separate sentences.
     """
@@ -130,6 +147,8 @@ def spoken(text: str) -> str:
         for line in text.splitlines()
     ]
     lines = [line for line in lines if line]
+    if language[:2] in _HOUR_LANGUAGES:
+        lines = [_HOURS.sub(_hours, line) for line in lines]
     return " ".join(
         line if index == len(lines) - 1 or line[-1] in ".!?:;," else line + "."
         for index, line in enumerate(lines)
@@ -372,7 +391,7 @@ async def run_model(
             isinstance(content, conversation.AssistantContent)
             and content.content is not None
         ):
-            reply = spoken(content.content)
+            reply = spoken(content.content, language)
             break
 
     tool_names = [
